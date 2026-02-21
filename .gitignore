@@ -1,0 +1,38 @@
+# Data (2.3 GB — backed up via iCloud, not suitable for git)
+data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node
+frontend/node_modules/
+
+# Secrets
+.env
+frontend/.env
+
+# macOS
+.DS_Store
+
+# Build output (regenerable via `npm run build`)
+cleo/web/static/app/
+
+# IDE / tools
+.vscode/
+.idea/
+
+# Reference material (not source code)
+User Provided Information/
+core-2-dashboard-builder-react 2/
+
+# Claude Code memory (session-specific)
+.claude/
+
+# Legacy
+dashboard/

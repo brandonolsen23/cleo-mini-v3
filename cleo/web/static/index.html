@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo Review</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; display: flex; flex-direction: column; }
+
+  /* Top bar */
+  .topbar {
+    background: #1a1a2e; color: #fff; padding: 10px 20px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  .topbar h1 { font-size: 18px; font-weight: 600; margin-right: 4px; }
+  .topbar select, .topbar input {
+    padding: 6px 10px; border-radius: 4px; border: 1px solid #555;
+    background: #16213e; color: #fff; font-size: 14px;
+  }
+  .topbar select:focus, .topbar input:focus { outline: none; border-color: #e94560; }
+  .topbar .status { margin-left: auto; font-size: 12px; color: #aaa; }
+  .topbar label { font-size: 13px; color: #ccc; }
+
+  /* Mode toggle */
+  .mode-toggle { display: flex; gap: 0; }
+  .mode-btn {
+    padding: 6px 14px; border: 1px solid #555; background: #16213e;
+    color: #aaa; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .mode-btn:first-child { border-radius: 4px 0 0 4px; }
+  .mode-btn:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+  .mode-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+
+  /* Nav buttons */
+  .nav-btn {
+    background: #e94560; color: #fff; border: none; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  .nav-btn:hover { background: #c73e54; }
+  .nav-btn:disabled { background: #555; cursor: default; }
+
+  /* Flag chips */
+  .flag-chip {
+    display: inline-block; font-size: 11px; padding: 2px 6px;
+    border-radius: 3px; margin: 1px 2px; font-weight: 600;
+  }
+  .flag-chip.html { background: #ffd43b; color: #333; }
+  .flag-chip.parse { background: #ff6b6b; color: #fff; }
+  .flag-chip.clean { background: #51cf66; color: #fff; }
+
+  /* Three columns */
+  .columns {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    gap: 0; flex: 1; min-height: 0;
+  }
+  .column {
+    border-right: 1px solid #ddd; overflow: auto;
+    background: #fff;
+  }
+  .column:last-child { border-right: none; }
+  .col-header {
+    position: sticky; top: 0; z-index: 10;
+    background: #eee; padding: 8px 12px; font-weight: 600;
+    font-size: 13px; border-bottom: 1px solid #ddd;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .col-header .version-tag { font-weight: 400; color: #666; font-size: 12px; }
+
+  /* HTML column (iframe) */
+  .column iframe {
+    width: 100%; height: calc(100% - 36px); border: none;
+  }
+
+  /* Parsed data display */
+  .parsed-data { padding: 12px 16px; font-size: 13px; line-height: 1.6; }
+  .parsed-data .section { margin-bottom: 14px; }
+  .parsed-data .section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    color: #888; letter-spacing: 0.5px; margin-bottom: 4px;
+    border-bottom: 1px solid #eee; padding-bottom: 2px;
+  }
+  .parsed-data .field { display: flex; gap: 8px; padding: 1px 0; }
+  .parsed-data .field-label { color: #888; min-width: 110px; flex-shrink: 0; font-size: 12px; }
+  .parsed-data .field-value { color: #222; word-break: break-word; }
+  .parsed-data .field-value.empty { color: #ccc; font-style: italic; }
+  .parsed-data .field-value.changed { background: #fff3bf; padding: 0 3px; border-radius: 2px; }
+
+  /* Empty state */
+  .empty-state {
+    display: flex; align-items: center; justify-content: center;
+    height: calc(100% - 36px); color: #aaa; font-size: 14px;
+  }
+
+  /* Counter */
+  .counter { font-size: 12px; color: #aaa; }
+
+  /* Review panel */
+  .review-panel {
+    background: #1a1a2e; color: #fff; border-top: 2px solid #e94560;
+    transition: max-height 0.3s ease;
+    overflow: hidden; flex-shrink: 0;
+  }
+  .review-panel.collapsed { max-height: 40px; }
+  .review-panel.expanded { max-height: 500px; overflow-y: auto; }
+  .review-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 20px; cursor: pointer; user-select: none;
+  }
+  .review-toggle h2 { font-size: 14px; font-weight: 600; }
+  .review-toggle .toggle-arrow { font-size: 16px; color: #e94560; }
+  .review-toggle .save-indicator {
+    font-size: 12px; padding: 2px 8px; border-radius: 3px; margin-left: 12px;
+  }
+  .save-indicator.saved { background: #51cf66; color: #fff; }
+  .save-indicator.unsaved { background: #ffd43b; color: #333; }
+  .save-indicator.hidden { display: none; }
+
+  .review-body {
+    padding: 8px 20px 16px; display: grid;
+    grid-template-columns: 2fr 1fr; gap: 0;
+  }
+  .review-pane {
+    padding: 0 16px;
+  }
+  .review-pane:first-child { border-right: 1px solid #333; }
+  .review-pane-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    color: #e94560; letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .parse-review-grid {
+    display: grid; grid-template-columns: 200px 1fr 1fr; gap: 16px;
+  }
+  .review-col { display: flex; flex-direction: column; gap: 8px; }
+  .review-col label { font-size: 12px; color: #aaa; }
+  .review-col select, .review-col input, .review-col textarea {
+    padding: 6px 10px; border-radius: 4px; border: 1px solid #555;
+    background: #16213e; color: #fff; font-size: 13px; font-family: inherit;
+  }
+  .review-col select:focus, .review-col input:focus, .review-col textarea:focus {
+    outline: none; border-color: #e94560;
+  }
+  .review-col textarea { resize: vertical; min-height: 60px; }
+
+  .review-actions { display: flex; gap: 8px; align-items: flex-end; }
+  .save-btn {
+    background: #e94560; color: #fff; border: none; padding: 8px 20px;
+    border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .save-btn:hover { background: #c73e54; }
+  .save-btn:disabled { background: #555; cursor: default; }
+  .clear-btn {
+    background: transparent; color: #aaa; border: 1px solid #555; padding: 8px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  .clear-btn:hover { background: #16213e; }
+
+  .override-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .override-item label { font-size: 11px; color: #888; margin-bottom: 1px; }
+  .override-item input { width: 100%; font-size: 12px; padding: 4px 8px; }
+
+  /* Reviewed indicator in dropdown */
+  .reviewed-mark { color: #51cf66; }
+
+  /* Sandbox regression bar */
+  .sandbox-bar {
+    display: none; background: #2a1a1e; border-bottom: 2px solid #e94560;
+    padding: 8px 20px; align-items: center; gap: 12px;
+  }
+  .sandbox-bar.visible { display: flex; }
+  .sandbox-bar .bar-label {
+    font-size: 13px; color: #ff6b6b; font-weight: 600; margin-right: auto;
+  }
+  .sandbox-bar .bar-status {
+    font-size: 12px; color: #51cf66; font-weight: 600;
+  }
+  .approve-btn {
+    background: #51cf66; color: #1a1a2e; border: none; padding: 6px 16px;
+    border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .approve-btn:hover { background: #40c057; }
+  .reject-btn {
+    background: #ff6b6b; color: #fff; border: none; padding: 6px 16px;
+    border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  .reject-btn:hover { background: #e03e3e; }
+
+  /* Extracted data styles */
+  .extracted-data { padding: 12px 16px; font-size: 13px; line-height: 1.6; }
+  .extracted-data .section { margin-bottom: 14px; }
+  .extracted-data .section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    color: #888; letter-spacing: 0.5px; margin-bottom: 4px;
+    border-bottom: 1px solid #eee; padding-bottom: 2px;
+  }
+  .extracted-data .addr-group { margin-bottom: 10px; padding-left: 8px; border-left: 3px solid #e8e8e8; }
+  .extracted-data .addr-original { font-size: 12px; color: #888; margin-bottom: 2px; }
+  .extracted-data .addr-expanded { font-size: 13px; color: #222; padding: 1px 0; }
+  .extracted-data .party-row { display: flex; gap: 8px; padding: 1px 0; }
+  .extracted-data .party-label { color: #888; min-width: 80px; flex-shrink: 0; font-size: 12px; }
+  .extracted-data .party-value { color: #222; word-break: break-word; }
+  .extracted-data .party-value.empty { color: #ccc; font-style: italic; }
+  .extracted-data .party-value.changed { background: #fff3bf; padding: 0 3px; border-radius: 2px; }
+  .extracted-data .addr-changed { border-left-color: #ffd43b; background: #fffef5; }
+  .extracted-data .addr-diff-badge {
+    display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px;
+    border-radius: 3px; background: #ffd43b; color: #333; margin-left: 6px; vertical-align: middle;
+  }
+  .extracted-data .addr-new-badge { background: #51cf66; color: #fff; }
+  .extracted-data .addr-skip-badge { background: #868e96; color: #fff; }
+
+  /* Extraction override fields */
+  .ext-overrides { margin-top: 10px; }
+  .ext-overrides-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #e94560; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .ext-ovr-item { margin-bottom: 8px; }
+  .ext-ovr-item label { font-size: 11px; color: #888; display: block; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ext-ovr-item input {
+    width: 100%; padding: 5px 8px; border-radius: 4px; border: 1px solid #555;
+    background: #16213e; color: #fff; font-size: 12px; font-family: inherit;
+  }
+  .ext-ovr-item input:focus { outline: none; border-color: #e94560; }
+  .ext-ovr-item input::placeholder { color: #556; font-size: 11px; }
+  .extracted-data .party-skip-badge {
+    display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px;
+    border-radius: 3px; background: #868e96; color: #fff; margin-left: 6px; vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Cleo Review</h1>
+
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="mode-parse" onclick="switchViewMode('parse')">Parse</button>
+    <button class="mode-btn" id="mode-extract" onclick="switchViewMode('extract')">Extract</button>
+  </div>
+
+  <label for="flag-filter">Filter:</label>
+  <select id="flag-filter">
+    <option value="all">All records</option>
+    <option value="flagged">All flagged</option>
+    <option value="reviewed">Reviewed</option>
+    <option value="unreviewed">Unreviewed</option>
+    <option value="regressions">Regressions</option>
+    <option value="extract_changes">Extract changes</option>
+    <option value="extract_regressions">Extract regressions</option>
+    <option value="addr_no_street_number">Addr: No street number</option>
+    <option value="addr_garbage">Addr: Garbage data</option>
+    <option value="addr_legal_desc">Addr: Legal description</option>
+    <option value="addr_suite_leading">Addr: Suite leading</option>
+    <option value="addr_intersection">Addr: Intersection</option>
+    <option value="addr_half">Addr: Half (1/2)</option>
+    <option value="addr_building_name">Addr: Building name</option>
+    <option value="addr_minor">Addr: Minor issues</option>
+  </select>
+
+  <input type="text" id="search" placeholder="Search RT ID..." style="width:140px;">
+
+  <select id="rt-select" style="width:180px;">
+    <option value="">Select RT ID...</option>
+  </select>
+
+  <button class="nav-btn" id="prev-btn" disabled>&larr; Prev</button>
+  <button class="nav-btn" id="next-btn" disabled>Next &rarr;</button>
+  <span class="counter" id="counter"></span>
+
+  <span class="status" id="status-info"></span>
+</div>
+
+<!-- Parse regression bar -->
+<div class="sandbox-bar" id="sandbox-bar">
+  <span class="bar-label" id="sandbox-bar-label">REGRESSION — Sandbox differs from active</span>
+  <span class="bar-status" id="sandbox-bar-status"></span>
+  <button class="approve-btn" id="sandbox-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="sandbox-reject">Reject Sandbox</button>
+</div>
+
+<!-- Extract regression bar -->
+<div class="sandbox-bar" id="extract-regression-bar">
+  <span class="bar-label">EXTRACT REGRESSION — Extraction sandbox differs from active</span>
+  <span class="bar-status" id="extract-bar-status"></span>
+  <button class="approve-btn" id="extract-approve">Approve Extraction</button>
+  <button class="reject-btn" id="extract-reject">Reject Extraction</button>
+</div>
+
+<div class="columns">
+  <!-- Column 1: HTML Source (parse mode) / Active Parsed (extract mode) -->
+  <div class="column" id="col-left">
+    <div class="col-header">
+      <span id="col-left-header-text">HTML Source</span>
+      <span id="col-left-flags"></span>
+    </div>
+    <div class="empty-state" id="html-empty">Select an RT ID</div>
+    <iframe id="html-frame" style="display:none;"></iframe>
+    <!-- Extract mode: parsed data in this column -->
+    <div class="empty-state" id="col1-parsed-empty" style="display:none;">Select an RT ID</div>
+    <div class="parsed-data" id="col1-parsed-data" style="display:none;"></div>
+  </div>
+
+  <!-- Column 2: Active Parsed (parse mode) / Active Extracted (extract mode) -->
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span id="col-middle-header-text">Active (Verified)</span>
+      <span class="version-tag" id="col-middle-version"></span>
+    </div>
+    <div class="empty-state" id="col2-empty">Select an RT ID</div>
+    <div class="parsed-data" id="col2-parsed-data" style="display:none;"></div>
+    <div class="extracted-data" id="col2-extracted-data" style="display:none;"></div>
+  </div>
+
+  <!-- Column 3: Sandbox (parse mode) / Sandbox Extracted (extract mode) -->
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span id="col-right-header-text">Sandbox</span>
+      <span class="version-tag" id="col-right-version"></span>
+    </div>
+    <div class="empty-state" id="col3-empty">Select an RT ID</div>
+    <div class="parsed-data" id="col3-parsed" style="display:none;"></div>
+    <div class="extracted-data" id="col3-extracted" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <!-- Parse Review (left pane) -->
+    <div class="review-pane" id="parse-review-pane">
+      <div class="review-pane-title">Parse Review <span class="save-indicator hidden" id="save-indicator"></span></div>
+      <div class="parse-review-grid">
+        <div class="review-col">
+          <label for="review-determination">Determination</label>
+          <select id="review-determination">
+            <option value="">(none)</option>
+            <option value="clean">Clean</option>
+            <option value="bad_source">Bad Source</option>
+            <option value="parser_issue">Parser Issue</option>
+          </select>
+          <label for="review-notes">Notes</label>
+          <textarea id="review-notes" placeholder="Optional notes about this record..."></textarea>
+          <div class="review-actions">
+            <button class="save-btn" id="review-save" disabled>Save</button>
+            <button class="clear-btn" id="review-clear">Clear</button>
+          </div>
+        </div>
+        <div class="review-col">
+          <label>Transaction / Property</label>
+          <div class="override-grid">
+            <div class="override-item"><label>Address</label><input id="ovr-address"></div>
+            <div class="override-item"><label>Suite</label><input id="ovr-address_suite"></div>
+            <div class="override-item"><label>City</label><input id="ovr-city"></div>
+            <div class="override-item"><label>Municipality</label><input id="ovr-municipality"></div>
+            <div class="override-item"><label>Postal Code</label><input id="ovr-postal_code"></div>
+            <div class="override-item"><label>Sale Price</label><input id="ovr-sale_price"></div>
+            <div class="override-item"><label>Sale Date</label><input id="ovr-sale_date"></div>
+            <div class="override-item"><label>ARN</label><input id="ovr-arn"></div>
+            <div class="override-item"><label>Description</label><input id="ovr-description"></div>
+            <div class="override-item"><label>Legal Description</label><input id="ovr-legal_description"></div>
+            <div class="override-item"><label>Site Area</label><input id="ovr-site_area"></div>
+            <div class="override-item"><label>Zoning</label><input id="ovr-zoning"></div>
+          </div>
+        </div>
+        <div class="review-col">
+          <label>Seller (Transferor)</label>
+          <div class="override-grid">
+            <div class="override-item"><label>Seller Corporate Name</label><input id="ovr-seller_name"></div>
+            <div class="override-item"><label>Seller Contact</label><input id="ovr-seller_contact"></div>
+            <div class="override-item"><label>Seller Phone</label><input id="ovr-seller_phone"></div>
+            <div class="override-item"><label>Seller Address</label><input id="ovr-seller_address"></div>
+            <div class="override-item" style="grid-column:1/-1"><label>Seller Alt Names (comma-separated)</label><input id="ovr-seller_alt_names" placeholder="e.g. Name One Inc, Name Two Ltd, Name Three Corp"></div>
+          </div>
+          <label style="margin-top:8px;">Buyer (Transferee)</label>
+          <div class="override-grid">
+            <div class="override-item"><label>Buyer Corporate Name</label><input id="ovr-buyer_name"></div>
+            <div class="override-item"><label>Buyer Contact</label><input id="ovr-buyer_contact"></div>
+            <div class="override-item"><label>Buyer Phone</label><input id="ovr-buyer_phone"></div>
+            <div class="override-item"><label>Buyer Address</label><input id="ovr-buyer_address"></div>
+            <div class="override-item" style="grid-column:1/-1"><label>Buyer Alt Names (comma-separated)</label><input id="ovr-buyer_alt_names" placeholder="e.g. Name One Inc, Name Two Ltd, Name Three Corp"></div>
+          </div>
+          <label style="margin-top:8px;">Broker / Consideration</label>
+          <div class="override-grid">
+            <div class="override-item"><label>Brokerage</label><input id="ovr-brokerage"></div>
+            <div class="override-item"><label>Broker Phone</label><input id="ovr-broker_phone"></div>
+            <div class="override-item"><label>Cash</label><input id="ovr-consideration_cash"></div>
+            <div class="override-item"><label>Assumed Debt</label><input id="ovr-consideration_debt"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Extraction Review (right pane) -->
+    <div class="review-pane" id="extract-review-pane">
+      <div class="review-pane-title">Extraction Review <span class="save-indicator hidden" id="ext-save-indicator"></span></div>
+      <div style="display:grid; grid-template-columns:200px 1fr; gap:16px;">
+        <div class="review-col">
+          <label for="ext-determination">Determination</label>
+          <select id="ext-determination">
+            <option value="">(none)</option>
+            <option value="clean">Clean</option>
+            <option value="extraction_issue">Extraction Issue</option>
+            <option value="parser_issue">Parser Issue (upstream)</option>
+          </select>
+          <label for="ext-notes">Notes</label>
+          <textarea id="ext-notes" placeholder="Notes about extraction quality..."></textarea>
+          <div class="review-actions">
+            <button class="save-btn" id="ext-save" disabled>Save</button>
+            <button class="clear-btn" id="ext-clear">Clear</button>
+          </div>
+        </div>
+        <div class="ext-overrides">
+          <div class="ext-overrides-title">Address Overrides</div>
+          <div id="ext-ovr-container"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allRecords = [];
+let filteredRecords = [];
+let currentIndex = -1;
+let activeData = null;
+let sandboxData = null;
+let extractedData = null;       // what we display (sandbox if exists, else active)
+let extractedActiveData = null;  // always the active version (for diff comparison)
+let currentRtId = null;
+let reviewDirty = false;
+let extReviewDirty = false;
+let viewMode = 'parse';   // 'parse' or 'extract'
+let hasParseSandbox = false;
+let hasExtractActive = false;
+let hasExtractSandbox = false;
+
+// Boot
+async function init() {
+  const [statusRes, idsRes, flagsRes, regressionsRes, extractChangesRes, extractRegressionsRes, addrIssuesRes] = await Promise.all([
+    fetch('/api/status').then(r => r.json()),
+    fetch('/api/rt-ids').then(r => r.json()),
+    fetch('/api/flags').then(r => r.json()),
+    fetch('/api/regressions').then(r => r.json()),
+    fetch('/api/extract-changes').then(r => r.json()),
+    fetch('/api/extract-regressions').then(r => r.json()),
+    fetch('/api/extract-address-issues').then(r => r.json()),
+  ]);
+
+  // Status bar
+  hasParseSandbox = statusRes.has_sandbox;
+  hasExtractActive = !!statusRes.extract_active_version;
+  hasExtractSandbox = statusRes.extract_has_sandbox;
+  const statusEl = document.getElementById('status-info');
+  statusEl.textContent = `Parse: ${statusRes.active_version || 'none'} | Sandbox: ${hasParseSandbox ? 'yes' : 'none'} | Extract: ${statusRes.extract_active_version || 'none'}`;
+  document.getElementById('col-middle-version').textContent = statusRes.active_version || '';
+
+  // Tag records with regression and extract-change status
+  const regressionSet = new Set(regressionsRes);
+  const extractChangeSet = new Set(extractChangesRes);
+  const extractRegressionSet = new Set(extractRegressionsRes);
+  const addrIssueSets = {};
+  for (const [cat, ids] of Object.entries(addrIssuesRes)) {
+    addrIssueSets[cat] = new Set(ids);
+  }
+  allRecords = idsRes;
+  for (const r of allRecords) {
+    r.regression = regressionSet.has(r.rt_id);
+    r.extract_changed = extractChangeSet.has(r.rt_id);
+    r.extract_regression = extractRegressionSet.has(r.rt_id);
+    r.addr_no_street_number = (addrIssueSets.no_street_number || new Set()).has(r.rt_id);
+    r.addr_garbage = (addrIssueSets.garbage_address || new Set()).has(r.rt_id);
+    r.addr_legal_desc = (addrIssueSets.legal_description || new Set()).has(r.rt_id);
+    r.addr_suite_leading = (addrIssueSets.suite_leading || new Set()).has(r.rt_id);
+    r.addr_intersection = (addrIssueSets.intersection || new Set()).has(r.rt_id);
+    r.addr_half = (addrIssueSets.half_address || new Set()).has(r.rt_id);
+    r.addr_building_name = (addrIssueSets.building_name || new Set()).has(r.rt_id);
+    r.addr_minor = (addrIssueSets.minor_issues || new Set()).has(r.rt_id);
+  }
+
+  // Update filter labels with counts
+  const regCount = regressionsRes.length;
+  const extChangeCount = extractChangesRes.length;
+  const extRegCount = extractRegressionsRes.length;
+  const filterEl = document.getElementById('flag-filter');
+  const addrFilterMap = {
+    'addr_no_street_number': 'no_street_number',
+    'addr_garbage': 'garbage_address',
+    'addr_legal_desc': 'legal_description',
+    'addr_suite_leading': 'suite_leading',
+    'addr_intersection': 'intersection',
+    'addr_half': 'half_address',
+    'addr_building_name': 'building_name',
+    'addr_minor': 'minor_issues',
+  };
+  for (const opt of filterEl.options) {
+    if (opt.value === 'regressions') opt.textContent = `Regressions (${regCount})`;
+    if (opt.value === 'extract_changes') opt.textContent = `Extract changes (${extChangeCount})`;
+    if (opt.value === 'extract_regressions') opt.textContent = `Extract regressions (${extRegCount})`;
+    const addrKey = addrFilterMap[opt.value];
+    if (addrKey) {
+      const count = (addrIssuesRes[addrKey] || []).length;
+      const label = opt.textContent.replace(/\(.*\)/, '').trim();
+      opt.textContent = `${label} (${count})`;
+    }
+  }
+
+  // Build flag filter options
+  const allFlags = new Set();
+  for (const [id, name] of Object.entries(flagsRes.html_flag_defs)) {
+    const count = flagsRes.html_counts[id] || 0;
+    if (count > 0) allFlags.add(id);
+  }
+  for (const [id, name] of Object.entries(flagsRes.parse_flag_defs)) {
+    const count = flagsRes.parse_counts[id] || 0;
+    if (count > 0) allFlags.add(id);
+  }
+  for (const flagId of [...allFlags].sort()) {
+    const opt = document.createElement('option');
+    opt.value = flagId;
+    const defs = {...flagsRes.html_flag_defs, ...flagsRes.parse_flag_defs};
+    const count = (flagsRes.html_counts[flagId] || 0) + (flagsRes.parse_counts[flagId] || 0);
+    opt.textContent = `${flagId} (${count})`;
+    filterEl.appendChild(opt);
+  }
+
+  // Render initial view mode (updates column headers etc.)
+  renderReviewPanel();
+  applyFilter();
+}
+
+function applyFilter() {
+  const filter = document.getElementById('flag-filter').value;
+  const search = document.getElementById('search').value.toUpperCase().trim();
+
+  // Auto-switch view mode based on filter
+  const extractFilters = ['extract_changes', 'extract_regressions',
+    'addr_no_street_number', 'addr_garbage', 'addr_legal_desc', 'addr_suite_leading',
+    'addr_intersection', 'addr_half', 'addr_building_name', 'addr_minor'];
+  if (extractFilters.includes(filter) && viewMode !== 'extract') {
+    switchViewMode('extract');
+  }
+  if (filter === 'regressions' && viewMode !== 'parse') {
+    switchViewMode('parse');
+  }
+
+  filteredRecords = allRecords.filter(r => {
+    if (search && !r.rt_id.toUpperCase().includes(search)) return false;
+    if (filter === 'all') return true;
+    if (filter === 'flagged') return r.flagged;
+    if (filter === 'reviewed') return r.reviewed;
+    if (filter === 'unreviewed') return !r.reviewed;
+    if (filter === 'regressions') return r.regression;
+    if (filter === 'extract_changes') return r.extract_changed;
+    if (filter === 'extract_regressions') return r.extract_regression;
+    if (filter === 'addr_no_street_number') return r.addr_no_street_number;
+    if (filter === 'addr_garbage') return r.addr_garbage;
+    if (filter === 'addr_legal_desc') return r.addr_legal_desc;
+    if (filter === 'addr_suite_leading') return r.addr_suite_leading;
+    if (filter === 'addr_intersection') return r.addr_intersection;
+    if (filter === 'addr_half') return r.addr_half;
+    if (filter === 'addr_building_name') return r.addr_building_name;
+    if (filter === 'addr_minor') return r.addr_minor;
+    // Specific flag
+    return r.html_flags.includes(filter) || r.parse_flags.includes(filter);
+  });
+
+  // Populate dropdown
+  const sel = document.getElementById('rt-select');
+  sel.innerHTML = '';
+  for (const r of filteredRecords) {
+    const opt = document.createElement('option');
+    opt.value = r.rt_id;
+    let label = r.rt_id;
+    if (r.reviewed) label = '\u2713 ' + label;
+    if (r.flagged) {
+      const flags = [...r.html_flags, ...r.parse_flags];
+      label += ` [${flags.join(', ')}]`;
+    }
+    if (r.determination) label += ` (${r.determination})`;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+
+  document.getElementById('counter').textContent = `${filteredRecords.length} records`;
+
+  if (filteredRecords.length > 0) {
+    currentIndex = 0;
+    sel.value = filteredRecords[0].rt_id;
+    loadRecord(filteredRecords[0].rt_id);
+  } else {
+    currentIndex = -1;
+    clearDisplay();
+  }
+  updateNav();
+}
+
+function updateNav() {
+  document.getElementById('prev-btn').disabled = currentIndex <= 0;
+  document.getElementById('next-btn').disabled = currentIndex >= filteredRecords.length - 1;
+  if (currentIndex >= 0) {
+    document.getElementById('counter').textContent =
+      `${currentIndex + 1} / ${filteredRecords.length}`;
+  }
+}
+
+async function loadRecord(rtId) {
+  currentRtId = rtId;
+
+  // Load parse review (doesn't depend on fetched data)
+  loadReview(rtId);
+
+  // HTML iframe (always load for parse mode)
+  const frame = document.getElementById('html-frame');
+  frame.src = `/api/html/${rtId}`;
+
+  // Flag chips
+  const rec = allRecords.find(r => r.rt_id === rtId);
+  const flagsEl = document.getElementById('col-left-flags');
+  flagsEl.innerHTML = '';
+  if (rec) {
+    if (!rec.flagged) {
+      flagsEl.innerHTML = '<span class="flag-chip clean">CLEAN</span>';
+    } else {
+      for (const f of rec.html_flags) {
+        flagsEl.innerHTML += `<span class="flag-chip html">${f}</span>`;
+      }
+      for (const f of rec.parse_flags) {
+        flagsEl.innerHTML += `<span class="flag-chip parse">${f}</span>`;
+      }
+    }
+  }
+
+  // Active JSON
+  activeData = null;
+  try {
+    const res = await fetch(`/api/active/${rtId}`);
+    if (res.ok) activeData = await res.json();
+  } catch { /* no active */ }
+
+  // Sandbox JSON
+  sandboxData = null;
+  try {
+    const res = await fetch(`/api/sandbox/${rtId}`);
+    if (res.ok) sandboxData = await res.json();
+  } catch { /* no sandbox */ }
+
+  // Extracted JSON — fetch active and sandbox separately for comparison
+  extractedData = null;
+  extractedActiveData = null;
+  try {
+    const res = await fetch(`/api/extracted/${rtId}`);
+    if (res.ok) extractedActiveData = await res.json();
+  } catch { /* no active extraction */ }
+  if (hasExtractSandbox) {
+    try {
+      const res = await fetch(`/api/extract-sandbox/${rtId}`);
+      if (res.ok) extractedData = await res.json();
+    } catch { /* no sandbox extraction */ }
+  } else {
+    extractedData = extractedActiveData;
+  }
+
+  // Load extract review after extractedActiveData is available (override fields depend on it)
+  loadExtractReview(rtId);
+
+  // Render based on view mode
+  renderViewMode();
+}
+
+function clearDisplay() {
+  document.getElementById('html-frame').style.display = 'none';
+  document.getElementById('html-empty').style.display = 'flex';
+  document.getElementById('html-empty').textContent = 'No records match filter';
+  document.getElementById('col1-parsed-data').style.display = 'none';
+  document.getElementById('col1-parsed-empty').style.display = 'none';
+  showEmpty('col2-parsed-data', 'col2-empty', 'No records match filter');
+  document.getElementById('col2-extracted-data').style.display = 'none';
+  showEmpty('col3-parsed', 'col3-empty', 'No records match filter');
+  document.getElementById('col3-extracted').style.display = 'none';
+  document.getElementById('col-left-flags').innerHTML = '';
+}
+
+function showEmpty(dataId, emptyId, msg) {
+  document.getElementById(dataId).style.display = 'none';
+  const el = document.getElementById(emptyId);
+  el.style.display = 'flex';
+  el.textContent = msg;
+}
+
+// ---------------------------------------------------------------------------
+// View mode switching
+// ---------------------------------------------------------------------------
+function switchViewMode(mode) {
+  viewMode = mode;
+  document.getElementById('mode-parse').classList.toggle('active', mode === 'parse');
+  document.getElementById('mode-extract').classList.toggle('active', mode === 'extract');
+  renderReviewPanel();
+  renderViewMode();
+}
+
+function renderViewMode() {
+  if (viewMode === 'parse') {
+    renderParseMode();
+  } else {
+    renderExtractMode();
+  }
+}
+
+function renderParseMode() {
+  // Column 1: HTML Source
+  document.getElementById('col-left-header-text').textContent = 'HTML Source';
+  document.getElementById('col-left-flags').style.display = '';
+  document.getElementById('col1-parsed-data').style.display = 'none';
+  document.getElementById('col1-parsed-empty').style.display = 'none';
+  if (currentRtId) {
+    document.getElementById('html-frame').style.display = 'block';
+    document.getElementById('html-empty').style.display = 'none';
+  } else {
+    document.getElementById('html-frame').style.display = 'none';
+    document.getElementById('html-empty').style.display = 'flex';
+  }
+
+  // Column 2: Active Parsed
+  document.getElementById('col-middle-header-text').textContent = 'Active (Verified)';
+  document.getElementById('col-middle-version').textContent = '';
+  document.getElementById('col2-extracted-data').style.display = 'none';
+  if (activeData) {
+    renderParsed('col2-parsed-data', 'col2-empty', activeData);
+  } else {
+    showEmpty('col2-parsed-data', 'col2-empty', currentRtId ? 'Not in active version' : 'Select an RT ID');
+  }
+
+  // Column 3: Sandbox (parse diff)
+  document.getElementById('col-right-header-text').textContent = 'Sandbox';
+  document.getElementById('col-right-version').textContent = hasParseSandbox ? 'sandbox' : '';
+  document.getElementById('col3-extracted').style.display = 'none';
+  if (sandboxData) {
+    renderParsed('col3-parsed', 'col3-empty', sandboxData, activeData);
+  } else {
+    showEmpty('col3-parsed', 'col3-empty', currentRtId ? 'No sandbox' : 'Select an RT ID');
+  }
+
+  // Regression bars
+  updateSandboxBar();
+  document.getElementById('extract-regression-bar').classList.remove('visible');
+}
+
+function renderExtractMode() {
+  // Column 1: Active Parsed (read-only reference)
+  document.getElementById('col-left-header-text').textContent = 'Parsed (Source)';
+  document.getElementById('col-left-flags').style.display = '';
+  document.getElementById('html-frame').style.display = 'none';
+  document.getElementById('html-empty').style.display = 'none';
+  if (activeData) {
+    renderParsed('col1-parsed-data', 'col1-parsed-empty', activeData);
+  } else {
+    showEmpty('col1-parsed-data', 'col1-parsed-empty', currentRtId ? 'No active data' : 'Select an RT ID');
+  }
+
+  // Column 2: Active Extracted
+  document.getElementById('col-middle-header-text').textContent = 'Active Extracted';
+  document.getElementById('col-middle-version').textContent = hasExtractActive ? 'extracted' : '';
+  document.getElementById('col2-parsed-data').style.display = 'none';
+  if (extractedActiveData) {
+    renderExtracted('col2-extracted-data', 'col2-empty', extractedActiveData, null);
+  } else {
+    document.getElementById('col2-extracted-data').style.display = 'none';
+    showEmpty('col2-parsed-data', 'col2-empty', currentRtId ? 'No active extraction' : 'Select an RT ID');
+  }
+
+  // Column 3: Sandbox Extracted (with diff vs active)
+  document.getElementById('col-right-header-text').textContent = 'Sandbox Extracted';
+  document.getElementById('col-right-version').textContent = hasExtractSandbox ? 'sandbox' : '';
+  document.getElementById('col3-parsed').style.display = 'none';
+  if (extractedData && hasExtractSandbox) {
+    renderExtracted('col3-extracted', 'col3-empty', extractedData, extractedActiveData);
+  } else {
+    document.getElementById('col3-extracted').style.display = 'none';
+    showEmpty('col3-parsed', 'col3-empty', currentRtId ? 'No extraction sandbox' : 'Select an RT ID');
+  }
+
+  // Regression bars
+  document.getElementById('sandbox-bar').classList.remove('visible');
+  updateExtractRegressionBar();
+}
+
+function renderReviewPanel() {
+  const parsePane = document.getElementById('parse-review-pane');
+  const extractPane = document.getElementById('extract-review-pane');
+  const body = document.getElementById('review-body');
+
+  if (viewMode === 'parse') {
+    parsePane.style.display = '';
+    extractPane.style.display = '';
+    body.style.gridTemplateColumns = '2fr 1fr';
+  } else {
+    parsePane.style.display = 'none';
+    extractPane.style.display = '';
+    body.style.gridTemplateColumns = '1fr';
+    // Remove left border since parse pane is hidden
+    extractPane.style.borderLeft = 'none';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function renderParsed(dataId, emptyId, data, compareData) {
+  const el = document.getElementById(dataId);
+  const emptyEl = document.getElementById(emptyId);
+  el.style.display = 'block';
+  emptyEl.style.display = 'none';
+
+  const t = data.transaction || {};
+  const addr = t.address || {};
+  const xferor = data.transferor || {};
+  const xferee = data.transferee || {};
+  const site = data.site || {};
+  const consid = data.consideration || {};
+  const broker = data.broker || {};
+
+  let html = '';
+
+  const altAddrs = (addr.alternate_addresses || []);
+  const cmpAltAddrs = (compareData?.transaction?.address?.alternate_addresses || []);
+
+  const extras = data.export_extras || {};
+  const cmpExtras = compareData?.export_extras || {};
+
+  html += section('Transaction', [
+    field('Address', addr.address, compareData?.transaction?.address?.address),
+    field('Suite', addr.address_suite, compareData?.transaction?.address?.address_suite),
+    ...(altAddrs.length || cmpAltAddrs.length
+      ? [field('Alt Addresses', altAddrs.join('; '), cmpAltAddrs.join('; '))]
+      : []),
+    field('City', addr.city, compareData?.transaction?.address?.city),
+    field('Municipality', addr.municipality, compareData?.transaction?.address?.municipality),
+    field('Postal Code', addr.postal_code, compareData?.transaction?.address?.postal_code),
+    field('Sale Date', t.sale_date, compareData?.transaction?.sale_date),
+    field('Sale Price', t.sale_price, compareData?.transaction?.sale_price),
+    field('Building SF', extras.building_sf, cmpExtras.building_sf),
+    field('RT Number', t.rt_number, compareData?.transaction?.rt_number),
+    field('ARN', t.arn, compareData?.transaction?.arn),
+    field('PINs', (t.pins || []).join(', '), (compareData?.transaction?.pins || []).join(', ')),
+  ]);
+
+  html += section('Seller (Transferor)', [
+    field('Name', xferor.name, compareData?.transferor?.name),
+    field('Contact', xferor.contact, compareData?.transferor?.contact),
+    field('Phone', formatVal(xferor.phone), formatVal(compareData?.transferor?.phone)),
+    field('Address', formatVal(xferor.address), formatVal(compareData?.transferor?.address)),
+    field('Alt Names', (xferor.alternate_names || []).join('; '), (compareData?.transferor?.alternate_names || []).join('; ')),
+    field('Phones', (xferor.phones || []).join('; '), (compareData?.transferor?.phones || []).join('; ')),
+    field('Attention', xferor.attention, compareData?.transferor?.attention),
+  ]);
+
+  html += section('Buyer (Transferee)', [
+    field('Name', xferee.name, compareData?.transferee?.name),
+    field('Contact', xferee.contact, compareData?.transferee?.contact),
+    field('Phone', formatVal(xferee.phone), formatVal(compareData?.transferee?.phone)),
+    field('Address', formatVal(xferee.address), formatVal(compareData?.transferee?.address)),
+    field('Alt Names', (xferee.alternate_names || []).join('; '), (compareData?.transferee?.alternate_names || []).join('; ')),
+    field('Phones', (xferee.phones || []).join('; '), (compareData?.transferee?.phones || []).join('; ')),
+    field('Attention', xferee.attention, compareData?.transferee?.attention),
+  ]);
+
+  html += section('Description', [
+    field('Description', data.description, compareData?.description),
+  ]);
+
+  html += section('Site', [
+    field('Legal Desc', site.legal_description, compareData?.site?.legal_description),
+    field('Area', `${site.site_area} ${site.site_area_units}`.trim(), `${compareData?.site?.site_area || ''} ${compareData?.site?.site_area_units || ''}`.trim()),
+    field('Frontage', `${site.site_frontage} ${site.site_frontage_units}`.trim(), `${compareData?.site?.site_frontage || ''} ${compareData?.site?.site_frontage_units || ''}`.trim()),
+    field('Zoning', site.zoning, compareData?.site?.zoning),
+  ]);
+
+  html += section('Consideration', [
+    field('Cash', consid.cash, compareData?.consideration?.cash),
+    field('Assumed Debt', consid.assumed_debt, compareData?.consideration?.assumed_debt),
+    field('Chattels', consid.chattels, compareData?.consideration?.chattels),
+    field('Verbatim', consid.verbatim, compareData?.consideration?.verbatim),
+  ]);
+
+  html += section('Broker', [
+    field('Brokerage', broker.brokerage, compareData?.broker?.brokerage),
+    field('Phone', broker.phone, compareData?.broker?.phone),
+  ]);
+
+  html += section('Photos', [
+    field('Photos', `${(data.photos || []).length} photo(s)`, `${(compareData?.photos || []).length} photo(s)`),
+  ]);
+
+  el.innerHTML = html;
+}
+
+function formatVal(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+function section(title, fields) {
+  return `<div class="section"><div class="section-title">${title}</div>${fields.join('')}</div>`;
+}
+
+function field(label, value, compareValue) {
+  const v = value || '';
+  const display = v || '(empty)';
+  const isEmpty = !v;
+  const changed = compareValue !== undefined && String(v) !== String(compareValue || '');
+  const cls = isEmpty ? 'field-value empty' : changed ? 'field-value changed' : 'field-value';
+  return `<div class="field"><span class="field-label">${label}</span><span class="${cls}">${escHtml(display)}</span></div>`;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderExtracted(dataId, emptyId, data, compareData) {
+  const el = document.getElementById(dataId);
+  const emptyEl = document.getElementById(emptyId);
+  el.style.display = 'block';
+  emptyEl.style.display = 'none';
+
+  // Build lookup of previous expanded addresses by original for diff
+  const prevByOriginal = {};
+  if (compareData) {
+    for (const a of (compareData.property && compareData.property.addresses) || []) {
+      prevByOriginal[a.original] = (a.expanded || []).join('|');
+    }
+  }
+
+  let html = '';
+
+  // Property addresses
+  const addrs = (data.property && data.property.addresses) || [];
+  html += '<div class="section"><div class="section-title">Property Addresses</div>';
+  if (addrs.length === 0) {
+    html += '<div style="color:#ccc;font-style:italic;padding:4px 0;">(none)</div>';
+  }
+  for (const a of addrs) {
+    const newExp = (a.expanded || []).join('|');
+    const oldExp = prevByOriginal[a.original];
+    const changed = compareData && oldExp !== undefined && oldExp !== newExp;
+    const isNew = compareData && oldExp === undefined;
+
+    html += `<div class="addr-group${changed ? ' addr-changed' : ''}">`;
+    html += `<div class="addr-original">${escHtml(a.original)}`;
+    if (a.skip_geocode) html += ' <span class="addr-diff-badge addr-skip-badge">SKIP GEO</span>';
+    if (changed) html += ' <span class="addr-diff-badge">CHANGED</span>';
+    if (isNew) html += ' <span class="addr-diff-badge addr-new-badge">NEW</span>';
+    html += '</div>';
+
+    for (const exp of (a.expanded || [])) {
+      html += `<div class="addr-expanded">${escHtml(exp)}</div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Seller
+  const seller = data.seller || {};
+  const cmpSeller = compareData?.seller || {};
+  const sellerSkip = seller.skip_geocode ? ' <span class="party-skip-badge">SKIP GEO</span>' : '';
+  html += `<div class="section"><div class="section-title">Seller${sellerSkip}</div>`;
+  html += extPartyRow('Original', seller.original, cmpSeller.original);
+  html += extPartyRow('Normalized', seller.normalized, cmpSeller.normalized);
+  html += '</div>';
+
+  // Buyer
+  const buyer = data.buyer || {};
+  const cmpBuyer = compareData?.buyer || {};
+  const buyerSkip = buyer.skip_geocode ? ' <span class="party-skip-badge">SKIP GEO</span>' : '';
+  html += `<div class="section"><div class="section-title">Buyer${buyerSkip}</div>`;
+  html += extPartyRow('Original', buyer.original, cmpBuyer.original);
+  html += extPartyRow('Normalized', buyer.normalized, cmpBuyer.normalized);
+  html += '</div>';
+
+  // Source version
+  if (data.source_version) {
+    html += `<div class="section"><div class="section-title">Source</div>`;
+    html += `<div class="party-row"><span class="party-label">Parse Ver</span><span class="party-value">${escHtml(data.source_version)}</span></div>`;
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function extPartyRow(label, value, compareValue) {
+  const v = value || '';
+  const display = v || '(empty)';
+  const isEmpty = !v;
+  const changed = compareValue !== undefined && String(v) !== String(compareValue || '');
+  const cls = isEmpty ? 'party-value empty' : changed ? 'party-value changed' : 'party-value';
+  return `<div class="party-row"><span class="party-label">${label}</span><span class="${cls}">${escHtml(display)}</span></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction review panel
+// ---------------------------------------------------------------------------
+let extOverrideKeys = []; // track current override field keys for save/load
+
+function buildExtOverrideFields() {
+  // Dynamically build override inputs based on the current record's extracted data
+  const container = document.getElementById('ext-ovr-container');
+  container.innerHTML = '';
+  extOverrideKeys = [];
+
+  // Use extractedActiveData (the active extracted version) for field labels/placeholders
+  const data = extractedActiveData;
+  if (!data) {
+    container.innerHTML = '<div style="color:#666;font-size:12px;">Load a record to see override fields</div>';
+    return;
+  }
+
+  // Property addresses
+  const addrs = (data.property && data.property.addresses) || [];
+  for (let i = 0; i < addrs.length; i++) {
+    const a = addrs[i];
+    const key = 'property_' + i;
+    const expanded = (a.expanded || []).join('; ');
+    const label = a.original || `Property address ${i}`;
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label title="${escHtml(expanded)}">${escHtml(label)}</label>` +
+      `<input id="ext-ovr-${key}" placeholder="${escHtml(expanded)}" data-key="${key}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', markExtReviewDirty);
+  }
+
+  // Seller
+  const seller = data.seller || {};
+  if (seller.original || seller.normalized) {
+    const key = 'seller';
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label>Seller address</label>` +
+      `<input id="ext-ovr-${key}" placeholder="${escHtml(seller.normalized || seller.original || '')}" data-key="${key}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', markExtReviewDirty);
+  }
+
+  // Buyer
+  const buyer = data.buyer || {};
+  if (buyer.original || buyer.normalized) {
+    const key = 'buyer';
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label>Buyer address</label>` +
+      `<input id="ext-ovr-${key}" placeholder="${escHtml(buyer.normalized || buyer.original || '')}" data-key="${key}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', markExtReviewDirty);
+  }
+}
+
+function getExtOverrides() {
+  const overrides = {};
+  for (const key of extOverrideKeys) {
+    const el = document.getElementById('ext-ovr-' + key);
+    if (el && el.value.trim()) {
+      overrides[key] = el.value.trim();
+    }
+  }
+  return overrides;
+}
+
+function setExtOverrides(overrides) {
+  for (const key of extOverrideKeys) {
+    const el = document.getElementById('ext-ovr-' + key);
+    if (el) el.value = (overrides && overrides[key]) || '';
+  }
+}
+
+function clearExtOverrides() {
+  for (const key of extOverrideKeys) {
+    const el = document.getElementById('ext-ovr-' + key);
+    if (el) el.value = '';
+  }
+}
+
+async function loadExtractReview(rtId) {
+  document.getElementById('ext-determination').value = '';
+  document.getElementById('ext-notes').value = '';
+  extReviewDirty = false;
+  updateExtSaveIndicator('hidden');
+  document.getElementById('ext-save').disabled = !rtId;
+
+  // Build override fields (needs extractedActiveData to be loaded already)
+  buildExtOverrideFields();
+
+  if (!rtId) return;
+
+  try {
+    const res = await fetch(`/api/extract-review/${rtId}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && (data.determination !== undefined || data.overrides)) {
+        document.getElementById('ext-determination').value = data.determination || '';
+        document.getElementById('ext-notes').value = data.notes || '';
+        setExtOverrides(data.overrides || {});
+        const hasContent = data.determination || data.notes || (data.overrides && Object.keys(data.overrides).length > 0);
+        updateExtSaveIndicator(hasContent ? 'saved' : 'hidden');
+        // Track extract sandbox_accepted on the record
+        const rec = allRecords.find(r => r.rt_id === rtId);
+        if (rec) rec.extract_sandbox_accepted = !!data.sandbox_accepted;
+      }
+    }
+  } catch { /* no review yet */ }
+}
+
+async function saveExtractReview() {
+  if (!currentRtId) return;
+
+  const determination = document.getElementById('ext-determination').value;
+  const notes = document.getElementById('ext-notes').value;
+  const overrides = getExtOverrides();
+
+  try {
+    const res = await fetch(`/api/extract-review/${currentRtId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ determination, notes, overrides }),
+    });
+    if (res.ok) {
+      extReviewDirty = false;
+      const hasContent = determination || notes || Object.keys(overrides).length > 0;
+      updateExtSaveIndicator(hasContent ? 'saved' : 'hidden');
+    }
+  } catch (err) {
+    console.error('Extract review save failed:', err);
+  }
+}
+
+function clearExtractReview() {
+  document.getElementById('ext-determination').value = '';
+  document.getElementById('ext-notes').value = '';
+  clearExtOverrides();
+  extReviewDirty = true;
+  updateExtSaveIndicator('unsaved');
+}
+
+function updateExtSaveIndicator(state) {
+  const el = document.getElementById('ext-save-indicator');
+  el.className = 'save-indicator ' + state;
+  if (state === 'saved') el.textContent = 'Saved';
+  else if (state === 'unsaved') el.textContent = 'Unsaved';
+  else el.textContent = '';
+}
+
+function markExtReviewDirty() {
+  if (currentRtId) {
+    extReviewDirty = true;
+    updateExtSaveIndicator('unsaved');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parse review panel
+// ---------------------------------------------------------------------------
+const OVERRIDE_FIELDS = [
+  'address', 'address_suite', 'city', 'municipality', 'postal_code',
+  'sale_price', 'sale_date', 'arn', 'description', 'legal_description',
+  'site_area', 'zoning',
+  'seller_name', 'seller_contact', 'seller_phone', 'seller_address', 'seller_alt_names',
+  'buyer_name', 'buyer_contact', 'buyer_phone', 'buyer_address', 'buyer_alt_names',
+  'brokerage', 'broker_phone', 'consideration_cash', 'consideration_debt',
+];
+
+function toggleReviewPanel() {
+  const panel = document.getElementById('review-panel');
+  const arrow = document.getElementById('toggle-arrow');
+  if (panel.classList.contains('collapsed')) {
+    panel.classList.remove('collapsed');
+    panel.classList.add('expanded');
+    arrow.innerHTML = '&#9660;';
+  } else {
+    panel.classList.remove('expanded');
+    panel.classList.add('collapsed');
+    arrow.innerHTML = '&#9650;';
+  }
+}
+
+async function loadReview(rtId) {
+  // Reset form
+  document.getElementById('review-determination').value = '';
+  document.getElementById('review-notes').value = '';
+  for (const f of OVERRIDE_FIELDS) {
+    document.getElementById('ovr-' + f).value = '';
+  }
+  reviewDirty = false;
+  updateSaveIndicator('hidden');
+  document.getElementById('review-save').disabled = !rtId;
+
+  if (!rtId) return;
+
+  try {
+    const res = await fetch(`/api/review/${rtId}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.determination !== undefined) {
+        document.getElementById('review-determination').value = data.determination || '';
+        document.getElementById('review-notes').value = data.notes || '';
+        const ovr = data.overrides || {};
+        for (const f of OVERRIDE_FIELDS) {
+          document.getElementById('ovr-' + f).value = ovr[f] || '';
+        }
+        updateSaveIndicator('saved');
+        // Track sandbox_accepted on the record
+        const rec = allRecords.find(r => r.rt_id === rtId);
+        if (rec) rec.sandbox_accepted = !!data.sandbox_accepted;
+      }
+    }
+  } catch { /* no review yet */ }
+}
+
+async function saveReview() {
+  if (!currentRtId) return;
+
+  const determination = document.getElementById('review-determination').value;
+  const notes = document.getElementById('review-notes').value;
+  const overrides = {};
+  for (const f of OVERRIDE_FIELDS) {
+    const val = document.getElementById('ovr-' + f).value;
+    if (val.trim()) overrides[f] = val.trim();
+  }
+
+  try {
+    const res = await fetch(`/api/review/${currentRtId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ determination, notes, overrides }),
+    });
+    if (res.ok) {
+      reviewDirty = false;
+      const hasContent = determination || notes || Object.keys(overrides).length > 0;
+      updateSaveIndicator(hasContent ? 'saved' : 'hidden');
+
+      // Update local record state
+      const rec = allRecords.find(r => r.rt_id === currentRtId);
+      if (rec) {
+        rec.reviewed = hasContent;
+        rec.determination = determination;
+        // Update dropdown label
+        const sel = document.getElementById('rt-select');
+        const opt = sel.querySelector(`option[value="${currentRtId}"]`);
+        if (opt) {
+          let label = currentRtId;
+          if (rec.reviewed) label = '\u2713 ' + label;
+          if (rec.flagged) {
+            const flags = [...rec.html_flags, ...rec.parse_flags];
+            label += ` [${flags.join(', ')}]`;
+          }
+          if (rec.determination) label += ` (${rec.determination})`;
+          opt.textContent = label;
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Save failed:', err);
+  }
+}
+
+function clearReview() {
+  document.getElementById('review-determination').value = '';
+  document.getElementById('review-notes').value = '';
+  for (const f of OVERRIDE_FIELDS) {
+    document.getElementById('ovr-' + f).value = '';
+  }
+  reviewDirty = true;
+  updateSaveIndicator('unsaved');
+}
+
+function updateSaveIndicator(state) {
+  const el = document.getElementById('save-indicator');
+  el.className = 'save-indicator ' + state;
+  if (state === 'saved') el.textContent = 'Saved';
+  else if (state === 'unsaved') el.textContent = 'Unsaved changes';
+  else el.textContent = '';
+}
+
+function markReviewDirty() {
+  if (currentRtId) {
+    reviewDirty = true;
+    updateSaveIndicator('unsaved');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parse sandbox regression bar
+// ---------------------------------------------------------------------------
+function updateSandboxBar() {
+  const bar = document.getElementById('sandbox-bar');
+  const statusEl = document.getElementById('sandbox-bar-status');
+  const approveBtn = document.getElementById('sandbox-approve');
+  const rejectBtn = document.getElementById('sandbox-reject');
+
+  const rec = allRecords.find(r => r.rt_id === currentRtId);
+  if (!rec || !rec.regression) {
+    bar.classList.remove('visible');
+    return;
+  }
+
+  bar.classList.add('visible');
+
+  if (rec.sandbox_accepted) {
+    statusEl.textContent = 'Approved';
+    approveBtn.style.display = 'none';
+    rejectBtn.style.display = 'none';
+  } else {
+    statusEl.textContent = '';
+    approveBtn.style.display = '';
+    rejectBtn.style.display = '';
+  }
+}
+
+async function approveSandbox() {
+  if (!currentRtId) return;
+  const rec = allRecords.find(r => r.rt_id === currentRtId);
+  if (!rec) return;
+
+  const notes = document.getElementById('review-notes').value;
+  const overrides = {};
+  for (const f of OVERRIDE_FIELDS) {
+    const val = document.getElementById('ovr-' + f).value;
+    if (val.trim()) overrides[f] = val.trim();
+  }
+
+  try {
+    const res = await fetch(`/api/review/${currentRtId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        determination: 'clean',
+        notes,
+        overrides,
+        sandbox_accepted: true,
+      }),
+    });
+    if (res.ok) {
+      rec.sandbox_accepted = true;
+      rec.reviewed = true;
+      rec.determination = 'clean';
+      updateSandboxBar();
+      loadReview(currentRtId);
+      // Update dropdown label
+      const sel = document.getElementById('rt-select');
+      const opt = sel.querySelector(`option[value="${currentRtId}"]`);
+      if (opt) {
+        let label = '\u2713 ' + currentRtId;
+        if (rec.flagged) {
+          const flags = [...rec.html_flags, ...rec.parse_flags];
+          label += ` [${flags.join(', ')}]`;
+        }
+        label += ' (clean)';
+        opt.textContent = label;
+      }
+    }
+  } catch (err) {
+    console.error('Approve failed:', err);
+  }
+}
+
+async function rejectSandbox() {
+  if (!currentRtId) return;
+  // Open review panel so user can add notes
+  const panel = document.getElementById('review-panel');
+  if (panel.classList.contains('collapsed')) toggleReviewPanel();
+  document.getElementById('review-determination').value = 'parser_issue';
+  markReviewDirty();
+}
+
+// ---------------------------------------------------------------------------
+// Extract regression bar
+// ---------------------------------------------------------------------------
+function updateExtractRegressionBar() {
+  const bar = document.getElementById('extract-regression-bar');
+  const statusEl = document.getElementById('extract-bar-status');
+  const approveBtn = document.getElementById('extract-approve');
+  const rejectBtn = document.getElementById('extract-reject');
+
+  const rec = allRecords.find(r => r.rt_id === currentRtId);
+  if (!rec || !rec.extract_regression) {
+    bar.classList.remove('visible');
+    return;
+  }
+
+  bar.classList.add('visible');
+
+  if (rec.extract_sandbox_accepted) {
+    statusEl.textContent = 'Approved';
+    approveBtn.style.display = 'none';
+    rejectBtn.style.display = 'none';
+  } else {
+    statusEl.textContent = '';
+    approveBtn.style.display = '';
+    rejectBtn.style.display = '';
+  }
+}
+
+async function approveExtractSandbox() {
+  if (!currentRtId) return;
+  const rec = allRecords.find(r => r.rt_id === currentRtId);
+  if (!rec) return;
+
+  const notes = document.getElementById('ext-notes').value;
+
+  try {
+    const res = await fetch(`/api/extract-review/${currentRtId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        determination: 'clean',
+        notes,
+        sandbox_accepted: true,
+      }),
+    });
+    if (res.ok) {
+      rec.extract_sandbox_accepted = true;
+      rec.extract_regression = false;
+      updateExtractRegressionBar();
+      loadExtractReview(currentRtId);
+      // Update dropdown label
+      const sel = document.getElementById('rt-select');
+      const opt = sel.querySelector(`option[value="${currentRtId}"]`);
+      if (opt) {
+        let label = '\u2713 ' + currentRtId;
+        if (rec.flagged) {
+          const flags = [...rec.html_flags, ...rec.parse_flags];
+          label += ` [${flags.join(', ')}]`;
+        }
+        label += ' (clean)';
+        opt.textContent = label;
+      }
+    }
+  } catch (err) {
+    console.error('Extract approve failed:', err);
+  }
+}
+
+async function rejectExtractSandbox() {
+  if (!currentRtId) return;
+  // Open review panel so user can add notes
+  const panel = document.getElementById('review-panel');
+  if (panel.classList.contains('collapsed')) toggleReviewPanel();
+  document.getElementById('ext-determination').value = 'extraction_issue';
+  markExtReviewDirty();
+}
+
+// Event listeners — sandbox bars
+document.getElementById('sandbox-approve').addEventListener('click', approveSandbox);
+document.getElementById('sandbox-reject').addEventListener('click', rejectSandbox);
+document.getElementById('extract-approve').addEventListener('click', approveExtractSandbox);
+document.getElementById('extract-reject').addEventListener('click', rejectExtractSandbox);
+
+// Event listeners — extraction review
+document.getElementById('ext-save').addEventListener('click', saveExtractReview);
+document.getElementById('ext-clear').addEventListener('click', clearExtractReview);
+document.getElementById('ext-determination').addEventListener('change', markExtReviewDirty);
+document.getElementById('ext-notes').addEventListener('input', markExtReviewDirty);
+
+// Event listeners — parse review panel
+document.getElementById('review-toggle').addEventListener('click', toggleReviewPanel);
+document.getElementById('review-save').addEventListener('click', saveReview);
+document.getElementById('review-clear').addEventListener('click', clearReview);
+document.getElementById('review-determination').addEventListener('change', markReviewDirty);
+document.getElementById('review-notes').addEventListener('input', markReviewDirty);
+for (const f of OVERRIDE_FIELDS) {
+  document.getElementById('ovr-' + f).addEventListener('input', markReviewDirty);
+}
+
+// Event listeners
+document.getElementById('flag-filter').addEventListener('change', applyFilter);
+document.getElementById('search').addEventListener('input', applyFilter);
+document.getElementById('rt-select').addEventListener('change', e => {
+  const rtId = e.target.value;
+  if (!rtId) return;
+  currentIndex = filteredRecords.findIndex(r => r.rt_id === rtId);
+  loadRecord(rtId);
+  updateNav();
+});
+document.getElementById('prev-btn').addEventListener('click', () => {
+  if (currentIndex > 0) {
+    currentIndex--;
+    const rtId = filteredRecords[currentIndex].rt_id;
+    document.getElementById('rt-select').value = rtId;
+    loadRecord(rtId);
+    updateNav();
+  }
+});
+document.getElementById('next-btn').addEventListener('click', () => {
+  if (currentIndex < filteredRecords.length - 1) {
+    currentIndex++;
+    const rtId = filteredRecords[currentIndex].rt_id;
+    document.getElementById('rt-select').value = rtId;
+    loadRecord(rtId);
+    updateNav();
+  }
+});
+
+// Keyboard nav
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowLeft') document.getElementById('prev-btn').click();
+  if (e.key === 'ArrowRight') document.getElementById('next-btn').click();
+});
+
+init();
+</script>
+</body>
+</html>

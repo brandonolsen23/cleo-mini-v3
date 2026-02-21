@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo Pipeline Inspector</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #f8f9fa; color: #1a1a2e; font-size: 12px; height: 100vh; display: flex; flex-direction: column; }
+
+/* Top bar */
+.topbar { background: #fff; border-bottom: 1px solid #d1d5db; padding: 8px 16px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.topbar h1 { font-size: 14px; color: #2563eb; white-space: nowrap; }
+.topbar select { background: #fff; color: #1a1a2e; border: 1px solid #d1d5db; border-radius: 4px; padding: 4px 8px; font-family: inherit; font-size: 12px; }
+.topbar button { background: #fff; color: #1a1a2e; border: 1px solid #d1d5db; border-radius: 4px; padding: 4px 10px; cursor: pointer; font-family: inherit; font-size: 12px; }
+.topbar button:hover { background: #e5e7eb; }
+.topbar .nav-group { display: flex; gap: 4px; align-items: center; }
+.topbar .rt-label { color: #6b7280; font-size: 11px; }
+.topbar .counter { color: #9ca3af; font-size: 11px; margin-left: auto; }
+
+/* 4-column grid */
+.columns { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; flex: 1; overflow: hidden; }
+.col { display: flex; flex-direction: column; border-right: 1px solid #d1d5db; overflow: hidden; }
+.col:last-child { border-right: none; }
+.col-header { background: #f1f5f9; padding: 6px 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #d1d5db; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.col-header .step { background: #2563eb; color: #fff; border-radius: 3px; padding: 1px 6px; font-size: 10px; }
+.col-body { flex: 1; overflow-y: auto; padding: 10px 12px; }
+
+/* HTML iframe */
+.col-body iframe { width: 100%; height: 100%; border: none; background: #fff; border-radius: 4px; }
+
+/* Sections */
+.section { margin-bottom: 14px; }
+.section-title { color: #2563eb; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 6px; }
+.field { margin-bottom: 4px; display: flex; gap: 6px; }
+.field-label { color: #6b7280; min-width: 100px; flex-shrink: 0; }
+.field-value { color: #1a1a2e; word-break: break-word; }
+.field-value.empty { color: #9ca3af; font-style: italic; }
+
+/* Badges */
+.badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; margin-left: 4px; vertical-align: middle; }
+.badge-skip { background: #6b7280; color: #fff; }
+.badge-rooftop { background: #059669; color: #fff; }
+.badge-point { background: #d97706; color: #fff; }
+.badge-interpolated { background: #dc2626; color: #fff; }
+.badge-exact { background: #059669; color: #fff; }
+.badge-high { background: #16a34a; color: #fff; }
+.badge-medium { background: #d97706; color: #fff; }
+.badge-low { background: #dc2626; color: #fff; }
+.badge-failed { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.badge-nocache { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+.badge-override { background: #7c3aed; color: #fff; }
+
+/* Expanded address list */
+.addr-list { margin: 4px 0 4px 12px; }
+.addr-item { padding: 3px 0; border-bottom: 1px solid #e5e7eb; }
+.addr-item:last-child { border-bottom: none; }
+.addr-original { color: #6b7280; font-size: 11px; }
+.addr-expanded { color: #1a1a2e; }
+.addr-geo { margin-top: 2px; }
+.addr-geo .coords { color: #2563eb; font-size: 11px; }
+.addr-geo .formatted { color: #6b7280; font-size: 11px; }
+
+/* Party block */
+.party-block { margin-bottom: 10px; padding: 8px; background: #f9fafb; border-radius: 4px; border: 1px solid #e5e7eb; }
+
+/* Loading / empty states */
+.empty-msg { color: #9ca3af; text-align: center; margin-top: 40px; }
+
+/* Arrow between columns */
+.col-header .arrow { color: #d1d5db; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Pipeline Inspector</h1>
+  <div class="nav-group">
+    <select id="rt-select" onchange="loadRecord(this.value)"></select>
+    <button onclick="nav(-1)">&larr;</button>
+    <button onclick="nav(1)">&rarr;</button>
+  </div>
+  <span class="counter" id="counter"></span>
+</div>
+
+<div class="columns">
+  <!-- Col 1: HTML Source -->
+  <div class="col">
+    <div class="col-header"><span class="step">1</span> HTML Source</div>
+    <div class="col-body" id="col-html">
+      <iframe id="html-frame"></iframe>
+    </div>
+  </div>
+
+  <!-- Col 2: Parsed -->
+  <div class="col">
+    <div class="col-header"><span class="step">2</span> Parsed</div>
+    <div class="col-body" id="col-parsed">
+      <div class="empty-msg">Select a record</div>
+    </div>
+  </div>
+
+  <!-- Col 3: Extracted -->
+  <div class="col">
+    <div class="col-header"><span class="step">3</span> Extracted</div>
+    <div class="col-body" id="col-extracted">
+      <div class="empty-msg">Select a record</div>
+    </div>
+  </div>
+
+  <!-- Col 4: Geocoded -->
+  <div class="col">
+    <div class="col-header"><span class="step">4</span> Geocoded</div>
+    <div class="col-body" id="col-geocoded">
+      <div class="empty-msg">Select a record</div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allRecords = [];
+let currentIndex = -1;
+
+async function init() {
+  const resp = await fetch('/api/rt-ids');
+  allRecords = await resp.json();
+
+  const sel = document.getElementById('rt-select');
+  for (const r of allRecords) {
+    const opt = document.createElement('option');
+    opt.value = r.rt_id;
+    opt.textContent = r.rt_id;
+    sel.appendChild(opt);
+  }
+
+  document.getElementById('counter').textContent = allRecords.length.toLocaleString() + ' records';
+
+  if (allRecords.length > 0) {
+    currentIndex = 0;
+    sel.value = allRecords[0].rt_id;
+    loadRecord(allRecords[0].rt_id);
+  }
+}
+
+function nav(delta) {
+  if (allRecords.length === 0) return;
+  currentIndex = Math.max(0, Math.min(allRecords.length - 1, currentIndex + delta));
+  const sel = document.getElementById('rt-select');
+  sel.value = allRecords[currentIndex].rt_id;
+  loadRecord(allRecords[currentIndex].rt_id);
+}
+
+async function loadRecord(rtId) {
+  // Update index
+  currentIndex = allRecords.findIndex(r => r.rt_id === rtId);
+
+  // Col 1: HTML
+  document.getElementById('html-frame').src = '/api/html/' + rtId;
+
+  // Fetch all 3 data sources in parallel
+  const [parsedResp, extractedResp, geocodedResp] = await Promise.all([
+    fetch('/api/active/' + rtId).then(r => r.ok ? r.json() : null),
+    fetch('/api/extracted/' + rtId).then(r => r.ok ? r.json() : null),
+    fetch('/api/geocoded/' + rtId).then(r => r.ok ? r.json() : null),
+  ]);
+
+  renderParsed(parsedResp);
+  renderExtracted(extractedResp);
+  renderGeocoded(geocodedResp);
+}
+
+// ── Col 2: Parsed ──
+
+function renderParsed(data) {
+  const el = document.getElementById('col-parsed');
+  if (!data) { el.innerHTML = '<div class="empty-msg">No parsed data</div>'; return; }
+
+  const t = data.transaction || {};
+  const addr = t.address || {};
+  const xferor = data.transferor || {};
+  const xferee = data.transferee || {};
+  const site = data.site || {};
+  const consid = data.consideration || {};
+
+  let html = '';
+
+  // Address
+  html += section('Address', [
+    field('Address', addr.address),
+    field('Suite', addr.address_suite),
+    field('City', addr.city),
+    field('Municipality', addr.municipality),
+    field('Province', addr.province),
+    field('Postal Code', addr.postal_code),
+    field('Alternates', (addr.alternate_addresses || []).join('; ')),
+  ]);
+
+  // Transaction
+  const extras = data.export_extras || {};
+  html += section('Transaction', [
+    field('RT Number', t.rt_number),
+    field('Sale Date', t.sale_date),
+    field('Sale Price', t.sale_price),
+    field('Building SF', extras.building_sf),
+    field('ARN', t.arn),
+    field('PINs', (t.pins || []).join(', ')),
+  ]);
+
+  // Seller
+  html += section('Seller (Transferor)', [
+    field('Name', xferor.name),
+    field('Contact', xferor.contact),
+    field('Phone', xferor.phone),
+    field('Address', xferor.address),
+    field('Aliases', (xferor.aliases || []).join(', ')),
+  ]);
+
+  // Buyer
+  html += section('Buyer (Transferee)', [
+    field('Name', xferee.name),
+    field('Contact', xferee.contact),
+    field('Phone', xferee.phone),
+    field('Address', xferee.address),
+    field('Aliases', (xferee.aliases || []).join(', ')),
+  ]);
+
+  // Site
+  html += section('Site', [
+    field('Legal Desc', site.legal_description),
+    field('Site Area', site.site_area ? site.site_area + ' ' + (site.site_area_units || '') : ''),
+  ]);
+
+  // Consideration
+  html += section('Consideration', [
+    field('Cash', consid.cash),
+    field('Assumed Debt', consid.assumed_debt),
+    field('Chattels', consid.chattels),
+  ]);
+
+  // Description
+  const desc = data.description || '';
+  if (desc) {
+    html += section('Description', [
+      '<div class="field"><span class="field-value" style="font-size:11px;color:#94a3b8;">' + esc(desc.substring(0, 300)) + (desc.length > 300 ? '...' : '') + '</span></div>'
+    ]);
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Col 3: Extracted ──
+
+function renderExtracted(data) {
+  const el = document.getElementById('col-extracted');
+  if (!data) { el.innerHTML = '<div class="empty-msg">No extracted data</div>'; return; }
+
+  let html = '';
+
+  // Property addresses
+  const addrs = (data.property || {}).addresses || [];
+  html += '<div class="section"><div class="section-title">Property Addresses</div>';
+  if (addrs.length === 0) {
+    html += '<div class="field"><span class="field-value empty">(none)</span></div>';
+  }
+  for (let i = 0; i < addrs.length; i++) {
+    const a = addrs[i];
+    html += '<div class="addr-list">';
+    html += '<div class="addr-original">Original: ' + esc(a.original || '') + '</div>';
+    if (a.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+    for (const exp of (a.expanded || [])) {
+      html += '<div class="addr-expanded">&rarr; ' + esc(exp) + '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Seller
+  const seller = data.seller || {};
+  html += '<div class="section"><div class="section-title">Seller Address';
+  if (seller.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+  html += '</div>';
+  html += '<div class="party-block">';
+  html += fieldRow('Original', seller.original);
+  html += fieldRow('Normalized', seller.normalized);
+  html += '</div></div>';
+
+  // Buyer
+  const buyer = data.buyer || {};
+  html += '<div class="section"><div class="section-title">Buyer Address';
+  if (buyer.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+  html += '</div>';
+  html += '<div class="party-block">';
+  html += fieldRow('Original', buyer.original);
+  html += fieldRow('Normalized', buyer.normalized);
+  html += '</div></div>';
+
+  html += '<div class="section"><div class="section-title">Meta</div>';
+  html += fieldRow('Source Version', data.source_version);
+  html += '</div>';
+
+  el.innerHTML = html;
+}
+
+// ── Col 4: Geocoded ──
+
+function renderGeocoded(data) {
+  const el = document.getElementById('col-geocoded');
+  if (!data) { el.innerHTML = '<div class="empty-msg">No geocode data</div>'; return; }
+
+  let html = '';
+
+  // Property addresses with geocode results
+  const props = data.property || [];
+  html += '<div class="section"><div class="section-title">Property Addresses</div>';
+  if (props.length === 0) {
+    html += '<div class="field"><span class="field-value empty">(none)</span></div>';
+  }
+  for (let i = 0; i < props.length; i++) {
+    const p = props[i];
+    html += '<div class="addr-list">';
+    html += '<div class="addr-original">Original: ' + esc(p.original || '');
+    if (p.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+    if (p.override) html += ' <span class="badge badge-override">OVERRIDE</span>';
+    html += '</div>';
+
+    for (const gr of (p.geocode_results || [])) {
+      html += '<div class="addr-item">';
+      html += '<div class="addr-expanded">' + esc(gr.address || '') + '</div>';
+      html += renderGeoResult(gr.geo);
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Seller
+  const s = data.seller || {};
+  html += '<div class="section"><div class="section-title">Seller Address';
+  if (s.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+  if (s.override) html += ' <span class="badge badge-override">OVERRIDE</span>';
+  html += '</div>';
+  html += '<div class="party-block">';
+  html += fieldRow('Normalized', s.override || s.normalized);
+  html += renderGeoResult(s.geo);
+  html += '</div></div>';
+
+  // Buyer
+  const b = data.buyer || {};
+  html += '<div class="section"><div class="section-title">Buyer Address';
+  if (b.skip_geocode) html += ' <span class="badge badge-skip">SKIP GEO</span>';
+  if (b.override) html += ' <span class="badge badge-override">OVERRIDE</span>';
+  html += '</div>';
+  html += '<div class="party-block">';
+  html += fieldRow('Normalized', b.override || b.normalized);
+  html += renderGeoResult(b.geo);
+  html += '</div></div>';
+
+  el.innerHTML = html;
+}
+
+function renderGeoResult(geo) {
+  if (!geo) return '';
+  if (geo.status === 'not_cached') {
+    return '<div class="addr-geo"><span class="badge badge-nocache">NOT CACHED</span></div>';
+  }
+  if (geo.status === 'failed') {
+    return '<div class="addr-geo"><span class="badge badge-failed">NO RESULT</span> ' + esc(geo.reason || '') + '</div>';
+  }
+  // Success
+  const accClass = 'badge-' + (geo.accuracy || 'point');
+  const confClass = 'badge-' + (geo.confidence || 'medium');
+  let html = '<div class="addr-geo">';
+  html += '<span class="coords">' + (geo.lat ? geo.lat.toFixed(6) : '?') + ', ' + (geo.lng ? geo.lng.toFixed(6) : '?') + '</span> ';
+  html += '<span class="badge ' + accClass + '">' + esc(geo.accuracy || '') + '</span> ';
+  html += '<span class="badge ' + confClass + '">' + esc(geo.confidence || '') + '</span>';
+  html += '<div class="formatted">' + esc(geo.formatted_address || '') + '</div>';
+  html += '</div>';
+  return html;
+}
+
+// ── Helpers ──
+
+function section(title, fields) {
+  let html = '<div class="section"><div class="section-title">' + esc(title) + '</div>';
+  for (const f of fields) {
+    html += f;
+  }
+  html += '</div>';
+  return html;
+}
+
+function field(label, value) {
+  const v = value || '';
+  const cls = v ? 'field-value' : 'field-value empty';
+  return '<div class="field"><span class="field-label">' + esc(label) + '</span><span class="' + cls + '">' + esc(v || '—') + '</span></div>';
+}
+
+function fieldRow(label, value) {
+  return field(label, value);
+}
+
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Keyboard navigation
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowLeft' || e.key === 'a') nav(-1);
+  if (e.key === 'ArrowRight' || e.key === 'd') nav(1);
+});
+
+init();
+</script>
+</body>
+</html>
