@@ -15,6 +15,7 @@ import { useContacts } from "../../api/contacts";
 import type { ContactSummary } from "../../types/contact";
 import Pagination from "../shared/Pagination";
 import { useTableParams } from "../../hooks/useTableParams";
+import LinkedInLink from "../shared/LinkedInLink";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -35,8 +36,11 @@ const columns = [
     meta: { grow: true },
     cell: (info) => (
       <div>
-        <div className="text-sm font-medium truncate" title={info.getValue()}>
-          {info.getValue()}
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-medium truncate" title={info.getValue()}>
+            {info.getValue()}
+          </span>
+          <LinkedInLink name={info.getValue()} />
         </div>
         <div className="text-xs text-muted-foreground mt-0.5 truncate" title={info.row.original.phones.join(", ")}>
           {info.row.original.phones.join(", ") || "\u2014"}

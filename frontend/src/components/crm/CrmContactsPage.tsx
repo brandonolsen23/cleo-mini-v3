@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import CrmContactForm from "./CrmContactForm";
+import LinkedInLink from "../shared/LinkedInLink";
 
 const columnHelper = createColumnHelper<CrmContact>();
 
@@ -44,7 +45,10 @@ const columns = [
     meta: { grow: true },
     cell: (info) => (
       <div>
-        <div className="text-sm font-medium truncate">{info.getValue()}</div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-medium truncate">{info.getValue()}</span>
+          <LinkedInLink name={info.getValue()} />
+        </div>
         {info.row.original.email && (
           <div className="text-xs text-muted-foreground mt-0.5 truncate">
             {info.row.original.email}

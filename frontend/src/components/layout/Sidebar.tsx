@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
-import { Receipt, Buildings, Users, UserCircle, Storefront, MapPin, SquaresFour, Palette, GearSix, AddressBook, Handshake } from "@phosphor-icons/react";
+import { Receipt, Buildings, Users, UserCircle, Storefront, MapPin, SquaresFour, GearSix, AddressBook, Handshake, Strategy, EnvelopeSimple } from "@phosphor-icons/react";
+import { Heading } from "@radix-ui/themes";
 import { cn } from "@/lib/utils";
 import type { Icon } from "@phosphor-icons/react";
 
@@ -13,9 +14,10 @@ const navGroups: NavGroup[] = [
       { to: "/dashboard", label: "Dashboard", icon: SquaresFour },
       { to: "/transactions", label: "Transactions", icon: Receipt },
       { to: "/properties", label: "Properties", icon: Buildings },
-      { to: "/parties", label: "Parties", icon: Users },
+      { to: "/parties", label: "Companies", icon: Users },
       { to: "/contacts", label: "Contacts", icon: UserCircle },
       { to: "/brands", label: "Brands", icon: Storefront },
+      { to: "/operators", label: "Operators", icon: Strategy },
       { to: "/map", label: "Map", icon: MapPin },
     ],
   },
@@ -24,12 +26,12 @@ const navGroups: NavGroup[] = [
     items: [
       { to: "/crm/contacts", label: "CRM Contacts", icon: AddressBook },
       { to: "/crm/deals", label: "Deals", icon: Handshake },
+      { to: "/outreach", label: "Outreach", icon: EnvelopeSimple },
     ],
   },
   {
     label: "",
     items: [
-      { to: "/components", label: "Components", icon: Palette },
       { to: "/admin", label: "Admin", icon: GearSix },
     ],
   },
@@ -43,8 +45,8 @@ function NavItem({ item }: { item: NavItem }) {
         cn(
           "flex items-center gap-3 px-3 py-2.5 text-body-1 font-medium transition-colors rounded-xl",
           isActive
-            ? "bg-b-surface2 text-foreground shadow-widget"
-            : "text-t-secondary hover:text-foreground"
+            ? "text-[var(--accent-11)] bg-white/70 shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+            : "text-[var(--slate-11)] hover:text-[var(--slate-12)] hover:bg-white/40"
         )
       }
     >
@@ -56,17 +58,15 @@ function NavItem({ item }: { item: NavItem }) {
 
 export default function Sidebar() {
   return (
-    <aside className="fixed left-0 top-0 bottom-0 w-60 bg-b-surface1 flex flex-col">
+    <aside className="fixed left-0 top-0 bottom-0 w-60 bg-transparent flex flex-col border-r border-white/40">
       <div className="h-16 flex items-center px-6">
-        <span className="text-h5 font-semibold">
-          Cleo
-        </span>
+        <Heading size="5" weight="bold">Cleo</Heading>
       </div>
       <nav className="flex-1 px-3 py-2">
         {navGroups.map((group, gi) => (
           <div key={gi} className={gi > 0 ? "mt-4" : ""}>
             {group.label && (
-              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-t-secondary">
+              <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--slate-9)]">
                 {group.label}
               </div>
             )}

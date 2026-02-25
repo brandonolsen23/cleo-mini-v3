@@ -11,12 +11,16 @@ import ContactsPage from "./components/contacts/ContactsPage";
 import ContactDetailPage from "./components/contacts/ContactDetailPage";
 import BrandsPage from "./components/brands/BrandsPage";
 import DashboardPage from "./components/dashboard/DashboardPage";
-import ShowcasePage from "./components/showcase/ShowcasePage";
 import AdminPage from "./components/admin/AdminPage";
 import CrmContactsPage from "./components/crm/CrmContactsPage";
 import CrmContactDetailPage from "./components/crm/CrmContactDetailPage";
 import DealsPage from "./components/crm/DealsPage";
 import DealDetailPage from "./components/crm/DealDetailPage";
+import OperatorsPage from "./components/operators/OperatorsPage";
+import OperatorDetailPage from "./components/operators/OperatorDetailPage";
+import OutreachListsPage from "./components/outreach/OutreachListsPage";
+import OutreachBuilderPage from "./components/outreach/OutreachBuilderPage";
+import OutreachListDetailPage from "./components/outreach/OutreachListDetailPage";
 
 const MapPage = lazy(() => import("./components/map/MapPage"));
 
@@ -38,8 +42,12 @@ export default function App() {
         <Route path="crm/contacts/:crmId" element={<CrmContactDetailPage />} />
         <Route path="crm/deals" element={<DealsPage />} />
         <Route path="crm/deals/:dealId" element={<DealDetailPage />} />
+        <Route path="operators" element={<OperatorsPage />} />
+        <Route path="operators/:opId" element={<OperatorDetailPage />} />
+        <Route path="outreach" element={<OutreachListsPage />} />
+        <Route path="outreach/new" element={<OutreachBuilderPage />} />
+        <Route path="outreach/:listId" element={<OutreachListDetailPage />} />
         <Route path="brands" element={<BrandsPage />} />
-        <Route path="components" element={<ShowcasePage />} />
         <Route path="admin" element={<AdminPage />} />
         <Route path="map" element={<Suspense fallback={<div className="flex-1 flex items-center justify-center"><p className="text-sm text-gray-500">Loading map...</p></div>}><MapPage /></Suspense>} />
       </Route>

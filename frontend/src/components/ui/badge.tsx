@@ -1,36 +1,35 @@
 import * as React from "react";
-import { cva, type VariantProps } from "class-variance-authority";
+import { Badge as RadixBadge, type BadgeProps as RadixBadgeProps } from "@radix-ui/themes";
 
 import { cn } from "@/lib/utils";
 
-const badgeVariants = cva(
-  "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-  {
-    variants: {
-      variant: {
-        default:
-          "bg-primary text-primary-foreground hover:bg-primary/80",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/80",
-        outline: "border text-foreground",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  }
-);
+type BadgeVariant = "default" | "secondary" | "destructive" | "outline";
 
-export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
+export interface BadgeProps extends React.HTMLAttributes<HTMLDivElement> {
+  variant?: BadgeVariant;
+}
 
-function Badge({ className, variant, ...props }: BadgeProps) {
+const variantMap: Record<
+  string,
+  { variant: RadixBadgeProps["variant"]; color?: RadixBadgeProps["color"] }
+> = {
+  default: { variant: "solid" },
+  secondary: { variant: "soft", color: "gray" },
+  destructive: { variant: "solid", color: "red" },
+  outline: { variant: "outline" },
+};
+
+function Badge({ className, variant = "default", color: _color, ...props }: BadgeProps) {
+  const mapped = variantMap[variant] ?? variantMap.default;
   return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+    <RadixBadge
+      size="1"
+      variant={mapped.variant}
+      color={mapped.color}
+      className={cn(className)}
+      {...props}
+    />
   );
 }
 
-export { Badge, badgeVariants };
+export { Badge };

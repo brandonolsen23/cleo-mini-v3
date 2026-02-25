@@ -34,7 +34,7 @@ export default function DealForm({
 }: Props) {
   const [title, setTitle] = useState(initial.title ?? "");
   const [propId, setPropId] = useState(initial.prop_id ?? "");
-  const [stage, setStage] = useState<DealStage>(initial.stage ?? "lead");
+  const [stage, setStage] = useState<DealStage>(initial.stage ?? "active_deal");
   const [contactIds, setContactIds] = useState<string[]>(initial.contact_ids ?? []);
   const [contactIdInput, setContactIdInput] = useState("");
   const [notes, setNotes] = useState(initial.notes ?? "");

@@ -52,10 +52,22 @@ ENTRY_RE = re.compile(
 )
 
 
+_POSTAL_RE = re.compile(r"^[A-Z]\d[A-Z]\s*\d[A-Z]\d$", re.IGNORECASE)
+_PROVINCE_RE = re.compile(r"^[A-Z]{2}$")
+
+
 def _parse_popup(html: str) -> dict:
     """Extract address from storelocate.ca popup HTML.
 
-    Format: <p>street<br> city<br> province<br> postal</p>
+    Two formats exist across brands:
+      With store name:  <p>Store Name<br> street<br> [unit<br>] city<br> prov<br> [postal]</p>
+      Without:          <p>street<br> [unit<br>] city<br> prov<br> [postal]</p>
+
+    Heuristic: if parts[0] starts with a digit it's a street address;
+    otherwise it's a store/plaza name to skip.
+
+    Parse from the tail (postal/province/city are predictable) and fold
+    remaining middle parts (unit, neighbourhood, etc.) into the address.
     """
     soup = BeautifulSoup(html, "lxml")
     p = soup.find("p")
@@ -66,11 +78,39 @@ def _parse_popup(html: str) -> dict:
     if len(parts) < 3:
         return {}
 
+    # Pop postal code from end if present
+    postal_code = None
+    if _POSTAL_RE.match(parts[-1]):
+        postal_code = parts.pop()
+
+    # Pop province (2-letter code)
+    province = "ON"
+    if len(parts) >= 3 and _PROVINCE_RE.match(parts[-1]):
+        province = parts.pop()
+
+    # Pop city
+    if len(parts) < 2:
+        return {}
+    city = parts.pop()
+
+    # Determine where the street address starts.
+    # If parts[0] starts with a digit, it IS the street address (no store name).
+    # Otherwise parts[0] is a store/plaza name — skip it.
+    if parts[0] and parts[0][0].isdigit():
+        addr_parts = parts
+    else:
+        addr_parts = parts[1:] if len(parts) > 1 else parts
+
+    if not addr_parts:
+        return {}
+
+    address = ", ".join(addr_parts)
+
     return {
-        "address": parts[0],
-        "city": parts[1] if len(parts) > 1 else "",
-        "province": parts[2] if len(parts) > 2 else "ON",
-        "postal_code": parts[3] if len(parts) > 3 else None,
+        "address": address,
+        "city": city,
+        "province": province,
+        "postal_code": postal_code,
     }
 
 

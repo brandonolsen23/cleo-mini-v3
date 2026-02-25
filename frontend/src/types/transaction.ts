@@ -9,7 +9,10 @@ export interface TransactionSummary {
   sale_date_iso: string;
   seller: string;
   buyer: string;
+  seller_group_id?: string | null;
+  buyer_group_id?: string | null;
   building_sf: string;
+  site_area: string;
   ppsf: string | null;
   has_photos: boolean;
   brands: string[];
@@ -86,4 +89,6 @@ export interface PartyInfo {
   officer_titles: string[];
   aliases: string[];
   attention: string;
+  group_id?: string | null;
+  contact_id?: string | null;
 }

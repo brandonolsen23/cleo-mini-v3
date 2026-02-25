@@ -214,9 +214,9 @@ export default function PartiesPage() {
       <div className="flex-none px-6 py-4 bg-background border-b border-border">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Parties</h1>
+            <h1 className="text-lg font-semibold text-foreground">Companies</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              {filteredCount.toLocaleString()} party groups
+              {filteredCount.toLocaleString()} companies
               {isFiltered && ` (filtered from ${data.length.toLocaleString()})`}
             </p>
           </div>

@@ -65,82 +65,85 @@ export default {
         "4xl": "2rem",
       },
       colors: {
-        // Core 2 shade scale
+        // Core 2 shade scale — remapped to Radix slate
         shade: {
-          "01": "#141414",
-          "02": "#101010",
-          "03": "#1a1a1a",
-          "04": "#262626",
-          "05": "#404040",
-          "06": "#727272",
-          "07": "#a1a1a1",
-          "08": "#e2e2e2",
-          "09": "#f1f1f1",
-          "10": "#fdfdfd",
+          "01": "var(--slate-12)",
+          "02": "var(--slate-12)",
+          "03": "var(--slate-12)",
+          "04": "var(--slate-11)",
+          "05": "var(--slate-10)",
+          "06": "var(--slate-9)",
+          "07": "var(--slate-8)",
+          "08": "var(--slate-6)",
+          "09": "var(--slate-3)",
+          "10": "var(--slate-1)",
         },
-        // Core 2 background tokens
+        // Core 2 background tokens — remapped to Radix
         b: {
-          surface1: "#f1f1f1",
-          surface2: "#fdfdfd",
-          surface3: "#ffffff",
-          highlight: "#f9f9f9",
-          pop: "#2a85ff",
-          dark1: "#141414",
-          dark2: "#1a1a1a",
-          depth: "#101010",
-          depth2: "#f5f5f5",
+          surface1: "var(--slate-2)",
+          surface2: "var(--color-panel-solid)",
+          surface3: "var(--slate-1)",
+          highlight: "var(--slate-3)",
+          pop: "var(--jade-9)",
+          dark1: "var(--slate-12)",
+          dark2: "var(--slate-12)",
+          depth: "var(--slate-12)",
+          depth2: "var(--slate-2)",
         },
-        // Core 2 text tokens
+        // Core 2 text tokens — remapped to Radix
         t: {
-          primary: "#101010",
-          secondary: "#727272",
-          tertiary: "#a1a1a1",
-          light: "#fdfdfd",
+          primary: "var(--slate-12)",
+          secondary: "var(--slate-11)",
+          tertiary: "var(--slate-9)",
+          light: "var(--slate-1)",
         },
-        // Core 2 stroke tokens
+        // Core 2 stroke tokens — remapped to Radix
         s: {
-          DEFAULT: "#e2e2e2",
-          strong: "#d4d4d4",
-          subtle: "#f1f1f1",
-          stroke2: "#d4d4d4",
-          highlight: "#a1a1a1",
-          focus: "#2a85ff",
+          DEFAULT: "var(--slate-6)",
+          strong: "var(--slate-7)",
+          subtle: "var(--slate-4)",
+          stroke2: "var(--slate-7)",
+          highlight: "var(--slate-8)",
+          focus: "var(--jade-9)",
         },
-        // Core 2 primary scale
-        "primary-01": "#0045b5",
-        "primary-02": "#1a6fdd",
-        "primary-03": "#2a85ff",
-        "primary-04": "#6ab0ff",
-        "primary-05": "#e8f1ff",
-        // Core 2 secondary scale
-        "secondary-01": "#404040",
-        "secondary-02": "#727272",
-        "secondary-03": "#a1a1a1",
-        "secondary-04": "#e2e2e2",
-        "secondary-05": "#f1f1f1",
-        // Core 2 accent
+        // Core 2 primary scale — remapped to Radix jade
+        "primary-01": "var(--jade-11)",
+        "primary-02": "var(--jade-10)",
+        "primary-03": "var(--jade-9)",
+        "primary-04": "var(--jade-7)",
+        "primary-05": "var(--jade-3)",
+        // Core 2 secondary scale — remapped to Radix slate
+        "secondary-01": "var(--slate-10)",
+        "secondary-02": "var(--slate-9)",
+        "secondary-03": "var(--slate-8)",
+        "secondary-04": "var(--slate-6)",
+        "secondary-05": "var(--slate-3)",
+        // Core 2 accent — remapped to Radix jade
         blue: {
-          DEFAULT: "#2a85ff",
-          light: "#e8f1ff",
-          dark: "#1a6fdd",
+          DEFAULT: "var(--jade-9)",
+          light: "var(--jade-3)",
+          dark: "var(--jade-11)",
         },
         green: {
-          DEFAULT: "#83bf6e",
-          light: "#eafae4",
+          DEFAULT: "var(--green-9)",
+          light: "var(--green-3)",
         },
         red: {
-          DEFAULT: "#ff6a55",
-          light: "#ffeeeb",
+          DEFAULT: "var(--red-9)",
+          light: "var(--red-3)",
         },
         orange: {
-          DEFAULT: "#ff9f38",
-          light: "#fff4e6",
+          DEFAULT: "var(--orange-9)",
+          light: "var(--orange-3)",
         },
         purple: {
-          DEFAULT: "#8e59ff",
-          light: "#f0e8ff",
+          DEFAULT: "var(--purple-9)",
+          light: "var(--purple-3)",
         },
-        // shadcn semantic tokens (remapped to Core 2 via CSS vars)
+        // Radix accent utilities
+        "accent-color": "var(--accent-9)",
+        "accent-subtle": "var(--accent-3)",
+        // shadcn semantic tokens — remapped to Radix via CSS vars
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -182,8 +185,6 @@ export default {
           "0px 8px 24px rgba(0, 0, 0, 0.06), 0px 0px 0px 1px rgba(0, 0, 0, 0.04)",
         dropdown:
           "0px 16px 48px rgba(0, 0, 0, 0.1), 0px 0px 0px 1px rgba(0, 0, 0, 0.04)",
-        "input-typing":
-          "0px 0px 0px 2px #2a85ff",
         "depth-toggle":
           "0px 4px 12px rgba(0, 0, 0, 0.06), 0px 0px 0px 1px rgba(0, 0, 0, 0.03)",
       },
@@ -196,10 +197,30 @@ export default {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
+        "slide-in-from-right": {
+          from: { transform: "translateX(100%)" },
+          to: { transform: "translateX(0)" },
+        },
+        "slide-out-to-right": {
+          from: { transform: "translateX(0)" },
+          to: { transform: "translateX(100%)" },
+        },
+        "overlay-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        "overlay-out": {
+          from: { opacity: "1" },
+          to: { opacity: "0" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "slide-in-from-right": "slide-in-from-right 0.3s ease-out",
+        "slide-out-to-right": "slide-out-to-right 0.2s ease-in",
+        "overlay-in": "overlay-in 0.3s ease-out",
+        "overlay-out": "overlay-out 0.2s ease-in",
       },
     },
   },

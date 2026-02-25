@@ -30,12 +30,11 @@ const pageTitles: Record<string, string> = {
   "/dashboard": "Welcome, Brandon.",
   "/transactions": "Transactions",
   "/properties": "Properties",
-  "/parties": "Parties",
+  "/parties": "Companies",
   "/contacts": "Contacts",
   "/brands": "Brands",
   "/map": "Map",
   "/keywords": "Keywords",
-  "/components": "Components",
 };
 
 function usePageTitle(): string {
@@ -95,9 +94,9 @@ export default function GlobalHeader() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-30 flex h-[5.5rem] items-center bg-b-surface1 px-6">
+    <header className="sticky top-0 z-30 flex h-[5.5rem] items-center bg-white/40 backdrop-blur-md px-6 border-b border-white/40">
       {/* Page title */}
-      <div className="mr-auto text-h4">{pageTitle}</div>
+      <div className="mr-auto text-h4 text-[var(--slate-12)]">{pageTitle}</div>
 
       {/* Search */}
       <div ref={wrapperRef} className="relative">
@@ -109,7 +108,7 @@ export default function GlobalHeader() {
           <button className="group absolute top-3 left-3 z-10 text-[0]">
             <SvgIcon
               d={ICON_SEARCH}
-              className="fill-t-secondary transition-colors group-hover:fill-t-primary"
+              className="fill-[var(--slate-9)] transition-colors group-hover:fill-[var(--slate-12)]"
             />
           </button>
           <input
@@ -122,7 +121,7 @@ export default function GlobalHeader() {
               if (e.key === "Escape") handleClose();
             }}
             placeholder="Search anything..."
-            className={`w-full h-12 pl-[2.625rem] border rounded-3xl text-body-2 text-t-primary placeholder:text-t-secondary outline-none bg-b-surface2 border-transparent ${
+            className={`w-full h-12 pl-[2.625rem] border rounded-3xl text-body-2 text-[var(--slate-12)] placeholder:text-[var(--slate-9)] outline-none bg-white/70 border-white/60 ${
               query ? "pr-[2.625rem]" : "pr-2.5"
             }`}
             autoComplete="off"
@@ -135,7 +134,7 @@ export default function GlobalHeader() {
           >
             <SvgIcon
               d={ICON_CLOSE}
-              className="fill-t-secondary transition-colors group-hover:fill-t-primary"
+              className="fill-[var(--slate-9)] transition-colors group-hover:fill-[var(--slate-12)]"
             />
           </button>
         </div>
@@ -143,16 +142,16 @@ export default function GlobalHeader() {
         {open && <SearchResults results={results} onClose={handleClose} />}
       </div>
 
-      {/* Icon buttons — Core 2 isWhite isCircle style */}
+      {/* Icon buttons */}
       <div className="flex items-center gap-3 ml-3">
-        <button className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-b-surface2 fill-t-secondary transition-all hover:fill-t-primary hover:shadow-depth">
+        <button className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-white/60 fill-[var(--slate-11)] transition-all hover:fill-[var(--slate-12)] hover:bg-white/80 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
           <SvgIcon d={ICON_BELL} />
         </button>
-        <button className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-b-surface2 fill-t-secondary transition-all hover:fill-t-primary hover:shadow-depth">
+        <button className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-white/60 fill-[var(--slate-11)] transition-all hover:fill-[var(--slate-12)] hover:bg-white/80 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)]">
           <SvgIcon d={ICON_CHAT} />
         </button>
-        <div className="w-12 h-12 rounded-full bg-shade-08 flex items-center justify-center overflow-hidden">
-          <svg className="size-6 fill-t-secondary" width={24} height={24} viewBox="0 0 24 24">
+        <div className="w-12 h-12 rounded-full bg-white/70 flex items-center justify-center overflow-hidden">
+          <svg className="size-6 fill-[var(--slate-9)]" width={24} height={24} viewBox="0 0 24 24">
             <circle cx="12" cy="8" r="4" />
             <path d="M20 19c0-3.314-3.582-6-8-6s-8 2.686-8 6" />
           </svg>

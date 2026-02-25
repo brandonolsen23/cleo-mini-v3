@@ -1,14 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
+import { Theme } from "@radix-ui/themes";
 import App from "./App";
 import "@fontsource-variable/geist";
+import "@radix-ui/themes/styles.css";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter basename="/app">
-      <App />
+      <Theme accentColor="jade" grayColor="slate" radius="large" panelBackground="translucent">
+        <App />
+      </Theme>
     </BrowserRouter>
   </React.StrictMode>
 );

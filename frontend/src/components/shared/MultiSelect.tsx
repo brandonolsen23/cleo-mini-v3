@@ -1,10 +1,5 @@
-import React from "react";
-import {
-  Popover,
-  PopoverButton,
-  PopoverPanel,
-  Transition,
-} from "@headlessui/react";
+import React, { useState } from "react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { CaretDown, X } from "@phosphor-icons/react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -30,6 +25,8 @@ export default function MultiSelect({
   placeholder = "All",
   label,
 }: MultiSelectProps) {
+  const [open, setOpen] = useState(false);
+
   const toggle = (value: string) => {
     if (selected.includes(value)) {
       onChange(selected.filter((v) => v !== value));
@@ -57,8 +54,8 @@ export default function MultiSelect({
           {label}
         </span>
       )}
-      <Popover className="relative">
-        <PopoverButton as={React.Fragment}>
+      <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+        <PopoverPrimitive.Trigger asChild>
           <Button variant="outline" size="sm" className="min-w-[120px] justify-between gap-1.5">
             <span className="truncate text-left flex-1">
               {displayText}
@@ -69,18 +66,12 @@ export default function MultiSelect({
               <CaretDown size={14} className="text-muted-foreground shrink-0" />
             )}
           </Button>
-        </PopoverButton>
-        <Transition
-          enter="transition ease-out duration-100"
-          enterFrom="opacity-0 scale-95"
-          enterTo="opacity-100 scale-100"
-          leave="transition ease-in duration-75"
-          leaveFrom="opacity-100 scale-100"
-          leaveTo="opacity-0 scale-95"
-        >
-          <PopoverPanel
-            anchor="bottom start"
-            className="z-50 mt-1 w-56 max-h-64 overflow-auto rounded-xl border border-border bg-popover shadow-dropdown outline-none"
+        </PopoverPrimitive.Trigger>
+        <PopoverPrimitive.Portal>
+          <PopoverPrimitive.Content
+            align="start"
+            sideOffset={4}
+            className="z-50 w-56 max-h-64 overflow-auto rounded-xl border border-border bg-popover shadow-dropdown outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
           >
             {options.length === 0 ? (
               <div className="px-3 py-2 text-sm text-muted-foreground">No options</div>
@@ -101,9 +92,9 @@ export default function MultiSelect({
                 </label>
               ))
             )}
-          </PopoverPanel>
-        </Transition>
-      </Popover>
+          </PopoverPrimitive.Content>
+        </PopoverPrimitive.Portal>
+      </PopoverPrimitive.Root>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import LinkedInLink from "../shared/LinkedInLink";
 
 const COLLAPSED_LIMIT = 5;
 
@@ -106,9 +107,12 @@ export default function ContactDetailPage() {
 
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-foreground">
-          {data.name}
-        </h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-semibold text-foreground">
+            {data.name}
+          </h1>
+          <LinkedInLink name={data.name} size={18} />
+        </div>
         <p className="text-sm text-muted-foreground mt-1">
           {data.transaction_count} transaction{data.transaction_count !== 1 ? "s" : ""}
           {` \u2022 ${data.entity_count} entit${data.entity_count !== 1 ? "ies" : "y"}`}
@@ -224,7 +228,7 @@ export default function ContactDetailPage() {
           <Card>
             <CardHeader className="px-5 py-3 border-b border-border">
               <CardTitle className="text-sm font-semibold uppercase tracking-wider">
-                Linked Party Groups ({data.party_groups.length})
+                Linked Companies ({data.party_groups.length})
               </CardTitle>
             </CardHeader>
             <CardContent className="px-5 py-4">

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from cleo.config import HTML_DIR
+from cleo.ingest.html_index import HtmlIndex
 from cleo.parse.parsers.build_transaction_context import build_transaction_context
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def parse_all(
         output_dir: Directory to write JSON files into.
         html_dir: Directory containing HTML files.
         rt_ids: Optional list of specific RT IDs to parse.
-                If None, parses all HTML files.
+                If None, parses all HTML files (including subdirectories).
 
     Returns:
         Summary dict: {total, parsed, errors, error_ids, elapsed}
@@ -31,10 +32,12 @@ def parse_all(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if rt_ids is not None:
-        html_files = [html_dir / f"{rt_id}.html" for rt_id in rt_ids]
+        html_index = HtmlIndex()
+        html_files = [html_index.resolve(rt_id) for rt_id in rt_ids]
         html_files = [p for p in html_files if p.exists()]
     else:
-        html_files = sorted(html_dir.glob("*.html"))
+        # rglob to find HTML in type subdirectories (e.g. html/retail/*.html)
+        html_files = sorted(html_dir.rglob("*.html"))
 
     total = len(html_files)
     logger.info("Parsing %d HTML files → %s", total, output_dir)

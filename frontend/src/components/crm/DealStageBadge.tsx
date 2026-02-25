@@ -2,13 +2,19 @@ import { cn } from "@/lib/utils";
 import type { DealStage } from "../../types/crm";
 import { STAGE_LABELS } from "../../types/crm";
 
-const stageColors: Record<DealStage, string> = {
-  lead: "bg-gray-100 text-gray-700",
-  contacted: "bg-blue-100 text-blue-700",
-  negotiating: "bg-yellow-100 text-yellow-700",
-  under_contract: "bg-purple-100 text-purple-700",
-  closed_won: "bg-green-100 text-green-700",
-  closed_lost: "bg-red-100 text-red-700",
+// Radix step 8 backgrounds with high-contrast text
+const stageColors: Record<string, string> = {
+  active_deal: "bg-[#53b9ab] text-teal-950",
+  in_negotiation: "bg-[#56ba9f] text-green-950",
+  under_contract: "bg-[#65ba74] text-green-950",
+  closed_won: "bg-[#8db654] text-lime-950",
+  lost_cancelled: "bg-[#9b9ef0] text-indigo-950",
+  // legacy
+  lead: "bg-gray-200 text-gray-800",
+  contacted: "bg-sky-200 text-sky-800",
+  qualifying: "bg-blue-200 text-blue-800",
+  negotiating: "bg-yellow-200 text-yellow-800",
+  closed_lost: "bg-red-200 text-red-800",
 };
 
 export default function DealStageBadge({ stage }: { stage: DealStage }) {
@@ -16,7 +22,7 @@ export default function DealStageBadge({ stage }: { stage: DealStage }) {
     <span
       className={cn(
         "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-        stageColors[stage] ?? "bg-gray-100 text-gray-700",
+        stageColors[stage] ?? "bg-gray-200 text-gray-800",
       )}
     >
       {STAGE_LABELS[stage] ?? stage}

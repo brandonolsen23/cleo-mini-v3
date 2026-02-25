@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo Party Review</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #f8f9fa; color: #1a1a2e; font-size: 12px; height: 100vh; display: flex; flex-direction: column; }
+
+/* Topbar */
+.topbar { background: #1a1a2e; color: #fff; padding: 8px 16px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+.topbar h1 { font-size: 14px; color: #e94560; white-space: nowrap; }
+.topbar .search-box { display: flex; gap: 4px; max-width: 400px; }
+.topbar input[type="text"] { background: #16213e; color: #fff; border: 1px solid #0f3460; border-radius: 4px; padding: 5px 10px; font-family: inherit; font-size: 12px; outline: none; width: 240px; }
+.topbar input[type="text"]::placeholder { color: #6b7280; }
+.topbar input[type="text"]:focus { border-color: #e94560; }
+.topbar button { background: #e94560; color: #fff; border: none; border-radius: 4px; padding: 5px 12px; cursor: pointer; font-family: inherit; font-size: 12px; }
+.topbar button:hover { background: #d63851; }
+.topbar .stats { color: #9ca3af; font-size: 11px; margin-left: auto; white-space: nowrap; }
+.topbar .nav-links { display: flex; gap: 8px; margin-left: 12px; }
+.topbar .nav-links a { color: #9ca3af; font-size: 11px; text-decoration: none; }
+.topbar .nav-links a:hover { color: #e94560; }
+
+/* Main layout */
+.columns { display: flex; flex: 1; overflow: hidden; }
+
+/* Left panel */
+.left-panel { width: 240px; min-width: 240px; display: flex; flex-direction: column; border-right: 1px solid #d1d5db; overflow: hidden; }
+
+/* Tab bar */
+.tab-row { display: flex; background: #e2e8f0; flex-shrink: 0; }
+.tab-row .tab-btn { flex: 1; padding: 5px 4px; font-size: 10px; text-align: center; cursor: pointer; border: none; background: transparent; font-family: inherit; color: #64748b; border-bottom: 2px solid transparent; text-transform: uppercase; letter-spacing: 0.3px; }
+.tab-row .tab-btn:hover { color: #1a1a2e; }
+.tab-row .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+.tab-row .tab-btn .cnt { background: #e94560; color: #fff; border-radius: 8px; padding: 0 4px; font-size: 9px; margin-left: 2px; }
+
+/* Name items in left panel */
+.name-item { padding: 6px 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer; border-left: 3px solid transparent; font-size: 11px; }
+.name-item:hover { background: #f0f9ff; }
+.name-item.active { border-left-color: #ea580c; background: #fff7ed; }
+.name-item.is-anchor { border-left-color: #2563eb; background: #eff6ff; }
+.name-item.confirmed { opacity: 0.6; }
+.name-item .ni-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.name-item .ni-meta { color: #9ca3af; font-size: 10px; margin-top: 1px; }
+.name-item .ni-badge { display: inline-block; font-size: 9px; padding: 0 4px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
+.name-item .ni-badge.ok { background: #d1fae5; color: #065f46; }
+.name-item .ni-badge.pending { background: #fef3c7; color: #92400e; }
+
+/* Group items in search/queue */
+.group-item { padding: 8px 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer; border-left: 3px solid transparent; }
+.group-item:hover { background: #f0f9ff; }
+.group-item.selected { border-left-color: #e94560; background: #fef2f2; }
+.group-item .gi-name { font-weight: 600; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-item .gi-meta { color: #9ca3af; font-size: 10px; margin-top: 1px; }
+.group-item .gi-score { background: #fef3c7; color: #92400e; font-size: 9px; padding: 0 4px; border-radius: 2px; font-weight: 600; }
+.col-body { flex: 1; overflow-y: auto; }
+
+/* Chain area */
+.chain-area { display: flex; flex: 1; overflow: hidden; }
+
+/* Chain pane */
+.chain-pane { flex: 1; display: flex; flex-direction: column; border-right: 1px solid #d1d5db; overflow: hidden; min-width: 0; }
+.chain-pane:last-child { border-right: none; }
+.chain-pane .pane-header { padding: 8px 12px; background: #fff; border-bottom: 2px solid #e5e7eb; flex-shrink: 0; }
+.chain-pane .pane-header .ph-rt { font-weight: 700; color: #2563eb; font-size: 12px; }
+.chain-pane .pane-header .ph-role { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; text-transform: uppercase; margin-left: 6px; }
+.chain-pane .pane-header .ph-role.buyer { background: #d1fae5; color: #065f46; }
+.chain-pane .pane-header .ph-role.seller { background: #fee2e2; color: #991b1b; }
+.chain-pane .pane-header .ph-name { font-size: 13px; font-weight: 700; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chain-pane .pane-header .ph-meta { font-size: 10px; color: #6b7280; margin-top: 1px; }
+.chain-pane .pane-scroll { flex: 1; overflow-y: auto; padding: 0; }
+
+/* Field table — Cleo Review style */
+.parsed-data { padding: 8px 12px; }
+.parsed-data .section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; color: #888; padding: 6px 0 3px; border-bottom: 1px solid #e5e7eb; margin-bottom: 2px; margin-top: 8px; }
+.parsed-data .section-title:first-child { margin-top: 0; }
+.parsed-data .field { display: flex; gap: 8px; padding: 2px 0; }
+.parsed-data .field-label { color: #888; min-width: 100px; flex-shrink: 0; font-size: 11px; }
+.parsed-data .field-value { color: #222; word-break: break-word; font-size: 11px; }
+.parsed-data .field-value.empty { color: #ccc; font-style: italic; }
+.parsed-data .party-marker { font-size: 10px; color: #6b7280; font-style: italic; margin-left: 4px; }
+
+/* Chain highlights */
+.hl-blue { background: #bfdbfe; padding: 0 3px; border-radius: 2px; }
+.hl-yellow { background: #fef08a; padding: 0 3px; border-radius: 2px; }
+.hl-blue.hl-yellow { background: linear-gradient(135deg, #bfdbfe 50%, #fef08a 50%); }
+
+/* Break link bar */
+.break-link-bar { padding: 8px 12px; text-align: center; border-top: 1px dashed #e5e7eb; flex-shrink: 0; }
+.break-link { background: #dc2626; color: #fff; border: none; border-radius: 4px; padding: 4px 14px; font-size: 11px; font-family: inherit; cursor: pointer; font-weight: 600; }
+.break-link:hover { background: #b91c1c; }
+
+/* Normalization banner */
+.norm-banner { background: #fef9c3; border: 1px solid #facc15; border-radius: 6px; margin: 8px 12px; padding: 8px 12px; font-size: 11px; color: #854d0e; }
+
+/* Section toggle */
+.section-toggle { cursor: pointer; user-select: none; }
+.section-toggle::before { content: '\25B6'; font-size: 8px; margin-right: 4px; display: inline-block; transition: transform 0.15s; }
+.section-toggle.open::before { transform: rotate(90deg); }
+.section-content { display: none; }
+.section-content.open { display: block; }
+
+/* Action bar */
+.action-bar { background: #1a1a2e; padding: 8px 16px; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.action-bar button { padding: 6px 16px; border-radius: 4px; font-family: inherit; font-size: 11px; cursor: pointer; border: none; font-weight: 600; }
+.action-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-confirm { background: #059669; color: #fff; }
+.btn-confirm:hover:not(:disabled) { background: #047857; }
+.btn-split { background: #dc2626; color: #fff; }
+.btn-split:hover:not(:disabled) { background: #b91c1c; }
+.btn-cluster { background: #7c3aed; color: #fff; }
+.btn-cluster:hover:not(:disabled) { background: #6d28d9; }
+.btn-skip { background: #6b7280; color: #fff; }
+.btn-skip:hover:not(:disabled) { background: #4b5563; }
+.action-bar .progress { color: #9ca3af; font-size: 11px; margin-left: auto; }
+
+/* Empty / loading */
+.empty-msg { color: #9ca3af; text-align: center; padding: 40px 16px; font-size: 12px; }
+.loading { color: #6b7280; text-align: center; padding: 40px 16px; }
+.loading::after { content: '...'; animation: dots 1.2s infinite; }
+@keyframes dots { 0%,20% { content: '.'; } 40% { content: '..'; } 60%,100% { content: '...'; } }
+
+/* Toast */
+.toast { position: fixed; bottom: 60px; right: 20px; background: #1a1a2e; color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 11px; z-index: 100; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.toast.error { background: #dc2626; }
+.toast.success { background: #059669; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Party Review</h1>
+  <div class="search-box">
+    <input type="text" id="search-input" placeholder="Search name, phone, address..." autocomplete="off">
+    <button onclick="doSearch()">Search</button>
+  </div>
+  <div class="stats" id="topbar-stats"></div>
+  <div class="nav-links">
+    <a href="/">Review</a>
+    <a href="/pipeline">Pipeline</a>
+  </div>
+</div>
+
+<div class="columns">
+  <!-- Left panel: Name list / Search / Queue -->
+  <div class="left-panel">
+    <div class="tab-row">
+      <button class="tab-btn active" id="tab-names" onclick="switchTab('names')">Names</button>
+      <button class="tab-btn" id="tab-search" onclick="switchTab('search')">Search</button>
+      <button class="tab-btn" id="tab-queue" onclick="switchTab('queue')">Queue <span class="cnt" id="queue-count" style="display:none"></span></button>
+    </div>
+    <div class="col-body" id="left-list">
+      <div class="empty-msg">Search for a group or load the review queue</div>
+    </div>
+  </div>
+
+  <!-- Chain area: 2-3 RT panes -->
+  <div class="chain-area" id="chain-area">
+    <div class="empty-msg" style="margin:auto">Select a group to begin</div>
+  </div>
+</div>
+
+<div class="action-bar">
+  <button class="btn-confirm" id="btn-confirm" disabled onclick="doConfirm()">Yes, Same Entity</button>
+  <button class="btn-split" id="btn-split" disabled onclick="doSplit()">No, Split Apart</button>
+  <button class="btn-cluster" id="btn-cluster" disabled onclick="doSplitCluster()">Split as Cluster</button>
+  <button class="btn-skip" id="btn-skip" disabled onclick="doSkip()">Skip</button>
+  <span class="progress" id="progress-info"></span>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// =========================================================================
+// State
+// =========================================================================
+let currentGroupId = null;
+let groupDetail = null;
+let anchorName = null;
+let reviewName = null;
+let reviewIndex = -1;
+let nameQueue = [];
+let confirmedSet = new Set();
+let searchResults = [];
+let needsReviewQueue = [];
+let activeTab = 'names';
+let chainData = null;  // {chain: [...], direct_reasons: [...]}
+
+// =========================================================================
+// Init
+// =========================================================================
+document.getElementById('search-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+fetchNeedsReview();
+
+// =========================================================================
+// Tabs
+// =========================================================================
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('tab-names').classList.toggle('active', tab === 'names');
+  document.getElementById('tab-search').classList.toggle('active', tab === 'search');
+  document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
+  renderLeftPanel();
+}
+
+// =========================================================================
+// Search
+// =========================================================================
+async function doSearch() {
+  const q = document.getElementById('search-input').value.trim();
+  if (!q) return;
+  const list = document.getElementById('left-list');
+  list.innerHTML = '<div class="loading">Searching</div>';
+  try {
+    const resp = await fetch(`/api/party-review/search?q=${encodeURIComponent(q)}`);
+    if (!resp.ok) throw new Error(await resp.text());
+    searchResults = await resp.json();
+    activeTab = 'search';
+    document.getElementById('tab-names').classList.remove('active');
+    document.getElementById('tab-search').classList.add('active');
+    document.getElementById('tab-queue').classList.remove('active');
+    document.getElementById('topbar-stats').textContent = `${searchResults.length} result${searchResults.length !== 1 ? 's' : ''}`;
+    renderLeftPanel();
+  } catch (err) {
+    list.innerHTML = `<div class="empty-msg">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+// =========================================================================
+// Needs-review queue
+// =========================================================================
+async function fetchNeedsReview() {
+  try {
+    const resp = await fetch('/api/party-review/needs-review');
+    if (!resp.ok) return;
+    needsReviewQueue = await resp.json();
+    const badge = document.getElementById('queue-count');
+    if (needsReviewQueue.length > 0) {
+      badge.textContent = needsReviewQueue.length;
+      badge.style.display = '';
+    }
+  } catch (_) {}
+}
+
+// =========================================================================
+// Render left panel
+// =========================================================================
+function renderLeftPanel() {
+  const list = document.getElementById('left-list');
+
+  if (activeTab === 'names') {
+    if (!currentGroupId || !groupDetail) {
+      list.innerHTML = '<div class="empty-msg">Load a group first (search or queue)</div>';
+      return;
+    }
+    renderNameList();
+    return;
+  }
+
+  if (activeTab === 'search') {
+    if (!searchResults.length) {
+      list.innerHTML = '<div class="empty-msg">No results</div>';
+      return;
+    }
+    list.innerHTML = searchResults.map(r => `
+      <div class="group-item${r.group_id === currentGroupId ? ' selected' : ''}" onclick="loadGroup('${r.group_id}')">
+        <div class="gi-name" title="${esc(r.display_name)}">${esc(r.display_name)}</div>
+        <div class="gi-meta">${r.group_id} &middot; ${r.names_count} names &middot; ${r.transaction_count} txns ${r.relevance_score ? `<span class="gi-score">${r.relevance_score}</span>` : ''}</div>
+      </div>
+    `).join('');
+    return;
+  }
+
+  if (activeTab === 'queue') {
+    if (!needsReviewQueue.length) {
+      list.innerHTML = '<div class="empty-msg">No groups need review</div>';
+      return;
+    }
+    list.innerHTML = needsReviewQueue.map(r => `
+      <div class="group-item${r.group_id === currentGroupId ? ' selected' : ''}" onclick="loadGroup('${r.group_id}')">
+        <div class="gi-name" title="${esc(r.display_name)}">${esc(r.display_name)}</div>
+        <div class="gi-meta">${r.group_id} &middot; ${r.names_count} names &middot; ${r.transaction_count} txns <span class="gi-score">Score: ${r.suspicion_score}</span></div>
+      </div>
+    `).join('');
+    return;
+  }
+}
+
+// =========================================================================
+// Render name list (names tab)
+// =========================================================================
+function renderNameList() {
+  const list = document.getElementById('left-list');
+  const names = groupDetail.names || [];
+  if (!names.length) {
+    list.innerHTML = '<div class="empty-msg">No names in group</div>';
+    return;
+  }
+
+  // Count appearances per name from group detail
+  const appCounts = {};
+  for (const a of groupDetail.appearances || []) {
+    appCounts[a.name] = (appCounts[a.name] || 0) + 1;
+  }
+
+  list.innerHTML = names.map(name => {
+    const isAnchor = name === anchorName;
+    const isReview = name === reviewName;
+    const isConf = confirmedSet.has(name.toUpperCase());
+    const count = appCounts[name] || 0;
+    let cls = 'name-item';
+    if (isReview) cls += ' active';
+    else if (isAnchor) cls += ' is-anchor';
+    if (isConf && !isAnchor && !isReview) cls += ' confirmed';
+
+    return `<div class="${cls}" onclick="selectReviewName('${esc(name).replace(/'/g, "\\'")}')">
+      <div class="ni-name">${isAnchor ? '<b style="color:#2563eb">[ANCHOR]</b> ' : ''}${esc(name)}</div>
+      <div class="ni-meta">${count} appearance${count !== 1 ? 's' : ''}
+        ${isConf ? '<span class="ni-badge ok">Confirmed</span>' : '<span class="ni-badge pending">Pending</span>'}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// =========================================================================
+// Load a group
+// =========================================================================
+async function loadGroup(groupId) {
+  currentGroupId = groupId;
+  reviewName = null;
+  reviewIndex = -1;
+  anchorName = null;
+  chainData = null;
+
+  document.getElementById('chain-area').innerHTML = '<div class="loading" style="margin:auto">Loading</div>';
+  updateButtons();
+
+  try {
+    const resp = await fetch(`/api/parties/${groupId}`);
+    if (!resp.ok) throw new Error('Failed to load group');
+    groupDetail = await resp.json();
+    confirmedSet = new Set((groupDetail.confirmed_names || []).map(n => n.toUpperCase()));
+
+    // Pick anchor: name with most appearances
+    const names = groupDetail.names || [];
+    const appCounts = {};
+    for (const a of groupDetail.appearances || []) {
+      appCounts[a.name] = (appCounts[a.name] || 0) + 1;
+    }
+    anchorName = names.reduce((best, n) =>
+      (appCounts[n] || 0) > (appCounts[best] || 0) ? n : best
+    , names[0]);
+
+    // Queue = all other names, unconfirmed first
+    nameQueue = names.filter(n => n !== anchorName);
+    nameQueue.sort((a, b) => {
+      const ac = confirmedSet.has(a.toUpperCase()) ? 1 : 0;
+      const bc = confirmedSet.has(b.toUpperCase()) ? 1 : 0;
+      return ac - bc;
+    });
+
+    // Auto-select first unconfirmed name
+    if (nameQueue.length > 0) {
+      reviewIndex = 0;
+      reviewName = nameQueue[0];
+    }
+
+    // Switch to names tab
+    activeTab = 'names';
+    document.getElementById('tab-names').classList.add('active');
+    document.getElementById('tab-search').classList.remove('active');
+    document.getElementById('tab-queue').classList.remove('active');
+    renderLeftPanel();
+
+    // Load chain for review name
+    if (reviewName) {
+      await loadChain();
+    } else {
+      document.getElementById('chain-area').innerHTML = '<div class="empty-msg" style="margin:auto">Only one name in this group</div>';
+    }
+
+    updateButtons();
+    updateProgress();
+
+  } catch (err) {
+    document.getElementById('chain-area').innerHTML = `<div class="empty-msg" style="margin:auto">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+// =========================================================================
+// Select a specific name to review
+// =========================================================================
+async function selectReviewName(name) {
+  if (name === anchorName) return;
+  reviewName = name;
+  reviewIndex = nameQueue.indexOf(name);
+  renderNameList();
+  await loadChain();
+  updateButtons();
+  updateProgress();
+}
+
+// =========================================================================
+// Load chain data and render panes
+// =========================================================================
+async function loadChain() {
+  if (!currentGroupId || !reviewName) return;
+  const area = document.getElementById('chain-area');
+  area.innerHTML = '<div class="loading" style="margin:auto">Loading chain</div>';
+
+  try {
+    const resp = await fetch(`/api/party-review/chain/${currentGroupId}?name=${encodeURIComponent(reviewName)}`);
+    if (!resp.ok) throw new Error(await resp.text());
+    chainData = await resp.json();
+    renderChainPanes();
+  } catch (err) {
+    area.innerHTML = `<div class="empty-msg" style="margin:auto">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+// =========================================================================
+// Render chain panes
+// =========================================================================
+function renderChainPanes() {
+  const area = document.getElementById('chain-area');
+  if (!chainData || !chainData.chain || !chainData.chain.length) {
+    area.innerHTML = '<div class="empty-msg" style="margin:auto">No chain data available</div>';
+    return;
+  }
+
+  const chain = chainData.chain;
+  let html = '';
+
+  for (let i = 0; i < chain.length; i++) {
+    const step = chain[i];
+    html += renderPane(step, i, chain);
+  }
+
+  area.innerHTML = html;
+}
+
+// =========================================================================
+// Render a single chain pane
+// =========================================================================
+function renderPane(step, index, chain) {
+  const rt = step.rt_data;
+  const rtId = step.rt_id;
+  const name = step.name;
+  const role = step.role;
+
+  if (!rt) {
+    return `<div class="chain-pane">
+      <div class="pane-header">
+        <div class="ph-name">${esc(name)}</div>
+        <div class="ph-meta">${rtId ? rtId + ' - RT file not found' : 'No RT record'}</div>
+      </div>
+      <div class="pane-scroll"><div class="empty-msg">No parsed data available</div></div>
+      ${renderBreakLinkBar(index, chain)}
+    </div>`;
+  }
+
+  const txn = rt.transaction || {};
+  const addr = txn.address || {};
+  const partyKey = role === 'seller' ? 'transferor' : 'transferee';
+  const otherKey = role === 'seller' ? 'transferee' : 'transferor';
+  const party = rt[partyKey] || {};
+  const other = rt[otherKey] || {};
+  const site = rt.site || {};
+  const consideration = rt.consideration || {};
+  const extras = rt.export_extras || {};
+
+  const roleLabel = role === 'buyer' ? 'BUYER (TRANSFEREE)' : 'SELLER (TRANSFEROR)';
+  const otherLabel = role === 'buyer' ? 'SELLER (TRANSFEROR)' : 'BUYER (TRANSFEREE)';
+  const roleClass = role === 'buyer' ? 'buyer' : 'seller';
+
+  // Determine highlight classes for this pane
+  // Blue: link between this pane and previous (index-1 to index)
+  // Yellow: link between this pane and next (index to index+1)
+  const blueLink = index > 0 ? chain[index - 1] : null;
+  const yellowLink = index < chain.length - 1 ? chain[index] : null;
+
+  const blueType = blueLink ? blueLink.link_type : null;
+  const blueVal = blueLink ? blueLink.link_value : null;
+  const yellowType = yellowLink ? yellowLink.link_type : null;
+  const yellowVal = yellowLink ? yellowLink.link_value : null;
+
+  // Normalization banner for fallback links
+  const isNormLink = chain.length === 2 && chain[0].link_type === 'normalization';
+
+  // Build field table
+  let fields = '';
+
+  // -- TRANSACTION section --
+  fields += '<div class="section-title">TRANSACTION</div>';
+  fields += fld('Address', addr.address, blueType, blueVal, yellowType, yellowVal);
+  if (addr.address_suite) fields += fld('Suite', addr.address_suite, blueType, blueVal, yellowType, yellowVal);
+  fields += fld('City', addr.city, blueType, blueVal, yellowType, yellowVal);
+  if (addr.municipality) fields += fld('Municipality', addr.municipality, blueType, blueVal, yellowType, yellowVal);
+  fields += fld('Sale Date', txn.sale_date || txn.sale_date_iso, blueType, blueVal, yellowType, yellowVal);
+  fields += fld('Sale Price', txn.sale_price || txn.sale_price_raw, blueType, blueVal, yellowType, yellowVal);
+  if (txn.arn) fields += fld('ARN', txn.arn, blueType, blueVal, yellowType, yellowVal);
+  if (txn.pins && txn.pins.length) fields += fld('PINs', txn.pins.join(', '), blueType, blueVal, yellowType, yellowVal);
+
+  // -- RELEVANT PARTY section (the one in the chain) --
+  fields += `<div class="section-title">${esc(roleLabel)} <span class="party-marker">-- chain party</span></div>`;
+  fields += fld('Name', party.name, blueType, blueVal, yellowType, yellowVal);
+  fields += fld('Contact', party.contact, blueType, blueVal, yellowType, yellowVal);
+  if (party.attention && party.attention !== party.contact) fields += fld('Attention', party.attention, blueType, blueVal, yellowType, yellowVal);
+  const phones = [...new Set([...(party.phones || []), ...(party.phone ? [party.phone] : [])])].filter(Boolean);
+  fields += fld('Phone', phones.join(', '), blueType, blueVal, yellowType, yellowVal);
+  fields += fld('Address', party.address, blueType, blueVal, yellowType, yellowVal);
+  if (party.aliases && party.aliases.length) fields += fld('Aliases', party.aliases.join(', '), blueType, blueVal, yellowType, yellowVal);
+  if (party.alternate_names && party.alternate_names.length) fields += fld('Alt Names', party.alternate_names.join(', '), blueType, blueVal, yellowType, yellowVal);
+  if (party.officer_titles && party.officer_titles.length) fields += fld('Officers', party.officer_titles.join(', '), blueType, blueVal, yellowType, yellowVal);
+
+  // -- OTHER PARTY section --
+  const otherToggleId = `other-${index}`;
+  fields += `<div class="section-title section-toggle" onclick="toggleSection('${otherToggleId}')">${esc(otherLabel)}</div>`;
+  fields += `<div class="section-content" id="${otherToggleId}">`;
+  fields += fld('Name', other.name, blueType, blueVal, yellowType, yellowVal);
+  fields += fld('Contact', other.contact, blueType, blueVal, yellowType, yellowVal);
+  const otherPhones = [...new Set([...(other.phones || []), ...(other.phone ? [other.phone] : [])])].filter(Boolean);
+  if (otherPhones.length) fields += fld('Phone', otherPhones.join(', '), blueType, blueVal, yellowType, yellowVal);
+  if (other.address) fields += fld('Address', other.address, blueType, blueVal, yellowType, yellowVal);
+  fields += '</div>';
+
+  // -- SITE / CONSIDERATION / DESCRIPTION (collapsed) --
+  const extraToggleId = `extra-${index}`;
+  const hasExtra = site.legal_description || site.site_area || site.zoning || consideration.verbatim || rt.description || extras.building_sf;
+  if (hasExtra) {
+    fields += `<div class="section-title section-toggle" onclick="toggleSection('${extraToggleId}')">SITE / CONSIDERATION / DESCRIPTION</div>`;
+    fields += `<div class="section-content" id="${extraToggleId}">`;
+    if (site.legal_description) fields += fld('Legal Desc', site.legal_description);
+    if (site.site_area) fields += fld('Site Area', `${site.site_area} ${site.site_area_units || ''}`.trim());
+    if (site.zoning) fields += fld('Zoning', site.zoning);
+    if (extras.building_sf) fields += fld('Building SF', extras.building_sf);
+    if (consideration.verbatim) fields += fld('Consideration', consideration.verbatim);
+    if (rt.description) fields += fld('Description', rt.description);
+    fields += '</div>';
+  }
+
+  return `<div class="chain-pane">
+    <div class="pane-header">
+      <span class="ph-rt">${esc(rtId || '?')}</span>
+      <span class="ph-role ${roleClass}">${esc(role || '?')}</span>
+      <div class="ph-name">${esc(name)}</div>
+      <div class="ph-meta">${esc(txn.sale_date || '')} &middot; ${esc(txn.sale_price || txn.sale_price_raw || '')}</div>
+    </div>
+    <div class="pane-scroll">
+      ${isNormLink && index === 0 ? '<div class="norm-banner">Linked by name normalization (same normalized name)</div>' : ''}
+      <div class="parsed-data">${fields}</div>
+    </div>
+    ${renderBreakLinkBar(index, chain)}
+  </div>`;
+}
+
+// =========================================================================
+// Render a field row with highlighting
+// =========================================================================
+function fld(label, value, blueType, blueVal, yellowType, yellowVal) {
+  if (!value && value !== 0) {
+    return `<div class="field"><span class="field-label">${esc(label)}</span><span class="field-value empty">--</span></div>`;
+  }
+
+  const valStr = String(value);
+  let hlClass = '';
+
+  // Check blue highlight (link from previous pane)
+  const isBlue = blueVal && matchesLinkValue(valStr, blueVal, blueType);
+  // Check yellow highlight (link to next pane)
+  const isYellow = yellowVal && matchesLinkValue(valStr, yellowVal, yellowType);
+
+  if (isBlue && isYellow) hlClass = 'hl-blue hl-yellow';
+  else if (isBlue) hlClass = 'hl-blue';
+  else if (isYellow) hlClass = 'hl-yellow';
+
+  const valHtml = hlClass
+    ? `<span class="${hlClass}">${esc(valStr)}</span>`
+    : esc(valStr);
+
+  return `<div class="field"><span class="field-label">${esc(label)}</span><span class="field-value">${valHtml}</span></div>`;
+}
+
+// =========================================================================
+// Check if a field value matches a link value
+// =========================================================================
+function matchesLinkValue(fieldVal, linkVal, linkType) {
+  if (!fieldVal || !linkVal) return false;
+  const fv = fieldVal.toLowerCase();
+  const lv = linkVal.toLowerCase();
+
+  // Exact substring match
+  if (fv.includes(lv) || lv.includes(fv)) return true;
+
+  // For phone links, normalize and compare
+  if (linkType === 'phone') {
+    const fvDigits = fv.replace(/\D/g, '');
+    const lvDigits = lv.replace(/\D/g, '');
+    if (fvDigits.length >= 7 && lvDigits.length >= 7 && fvDigits.includes(lvDigits)) return true;
+  }
+
+  // Token overlap for address/contact links
+  if (linkType === 'address' || linkType === 'contact') {
+    const stop = new Set(['the','and','inc','ltd','of','for','in','at','to','on','st','ave','rd','dr','ontario','toronto','canada','ste','suite']);
+    const lvTokens = lv.split(/[\s,;\/\-\(\)]+/).map(t => t.replace(/[^a-z0-9]/g, '')).filter(t => t.length >= 3 && !stop.has(t));
+    if (lvTokens.length === 0) return false;
+    let matches = 0;
+    for (const t of lvTokens) {
+      if (fv.includes(t)) matches++;
+    }
+    return matches >= Math.min(2, lvTokens.length);
+  }
+
+  return false;
+}
+
+// =========================================================================
+// Break link bar between panes
+// =========================================================================
+function renderBreakLinkBar(index, chain) {
+  if (index >= chain.length - 1) return '';
+  const leftName = chain[index].name;
+  return `<div class="break-link-bar">
+    <button class="break-link" onclick="breakLink(${index}, '${esc(leftName).replace(/'/g, "\\'")}')">Break Link: ${index + 1} &harr; ${index + 2}</button>
+  </div>`;
+}
+
+// =========================================================================
+// Break link action
+// =========================================================================
+async function breakLink(index, name) {
+  if (!currentGroupId || !name) return;
+  if (!confirm(`Disconnect "${name}" from group ${currentGroupId}?`)) return;
+
+  try {
+    const resp = await fetch(`/api/parties/${currentGroupId}/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, reason: 'Break link via chain review' })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    showToast(`Disconnected: "${name}" removed from group`, 'success');
+    await loadGroup(currentGroupId);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// =========================================================================
+// Toggle collapsible sections
+// =========================================================================
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('open');
+  // Toggle the section-toggle class on the preceding title
+  const title = el.previousElementSibling;
+  if (title && title.classList.contains('section-toggle')) {
+    title.classList.toggle('open');
+  }
+}
+
+// =========================================================================
+// Actions
+// =========================================================================
+async function doConfirm() {
+  if (!currentGroupId || !reviewName) return;
+  document.getElementById('btn-confirm').disabled = true;
+  try {
+    const resp = await fetch(`/api/parties/${currentGroupId}/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: reviewName })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    confirmedSet.add(reviewName.toUpperCase());
+    showToast(`Confirmed: "${reviewName}" belongs in ${currentGroupId}`, 'success');
+    advanceToNext();
+  } catch (err) {
+    showToast(err.message, 'error');
+    updateButtons();
+  }
+}
+
+async function doSplit() {
+  if (!currentGroupId || !reviewName) return;
+  document.getElementById('btn-split').disabled = true;
+  try {
+    const resp = await fetch(`/api/parties/${currentGroupId}/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: reviewName, reason: 'Split via party review' })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    showToast(`Split: "${reviewName}" removed from group`, 'success');
+    await loadGroup(currentGroupId);
+  } catch (err) {
+    showToast(err.message, 'error');
+    updateButtons();
+  }
+}
+
+async function doSplitCluster() {
+  if (!currentGroupId || !chainData || !chainData.chain) return;
+  const chainNames = [...new Set(chainData.chain.map(s => s.name))];
+  if (chainNames.length < 2) return;
+
+  document.getElementById('btn-cluster').disabled = true;
+  try {
+    const resp = await fetch(`/api/parties/${currentGroupId}/split-cluster`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names: chainNames, reason: 'Split cluster via chain review' })
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    const data = await resp.json();
+    showToast(`Cluster split: ${chainNames.length} names moved to ${data.target_group}`, 'success');
+    await loadGroup(currentGroupId);
+  } catch (err) {
+    showToast(err.message, 'error');
+    updateButtons();
+  }
+}
+
+function doSkip() {
+  advanceToNext();
+}
+
+async function advanceToNext() {
+  if (reviewIndex < nameQueue.length - 1) {
+    reviewIndex++;
+    reviewName = nameQueue[reviewIndex];
+    renderNameList();
+    await loadChain();
+  } else {
+    reviewName = null;
+    chainData = null;
+    document.getElementById('chain-area').innerHTML = '<div class="empty-msg" style="margin:auto">All names reviewed for this group</div>';
+    renderNameList();
+  }
+  updateButtons();
+  updateProgress();
+}
+
+function updateButtons() {
+  const hasReview = !!reviewName;
+  document.getElementById('btn-confirm').disabled = !hasReview;
+  document.getElementById('btn-split').disabled = !hasReview;
+  document.getElementById('btn-skip').disabled = !hasReview;
+  // Enable cluster split only when chain has 2+ distinct names
+  const chainNames = chainData && chainData.chain ? new Set(chainData.chain.map(s => s.name)) : new Set();
+  document.getElementById('btn-cluster').disabled = !hasReview || chainNames.size < 2;
+}
+
+function updateProgress() {
+  const el = document.getElementById('progress-info');
+  if (!currentGroupId || !groupDetail) {
+    el.textContent = '';
+    return;
+  }
+  const total = nameQueue.length;
+  const pos = reviewIndex >= 0 ? reviewIndex + 1 : 0;
+  const confCount = (groupDetail.names || []).filter(n => confirmedSet.has(n.toUpperCase())).length;
+  el.textContent = `${groupDetail.group_id} \u00b7 Name ${pos}/${total} \u00b7 ${confCount}/${groupDetail.names.length} confirmed`;
+}
+
+// =========================================================================
+// Toast
+// =========================================================================
+function showToast(msg, type) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `toast show ${type || ''}`;
+  clearTimeout(el._timeout);
+  el._timeout = setTimeout(() => { el.className = 'toast'; }, 3000);
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+function esc(str) {
+  if (!str) return '';
+  const d = document.createElement('div');
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+function truncate(s, n) {
+  return s && s.length > n ? s.slice(0, n) + '...' : (s || '');
+}
+</script>
+</body>
+</html>

@@ -11,7 +11,10 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from .normalize import normalize_name, normalize_address, normalize_phone, make_alias
+from .normalize import (
+    normalize_name, normalize_address, normalize_phone, make_alias,
+    extract_brand_token,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +27,21 @@ _COMPANY_INDICATORS = re.compile(
     r"|DEVELOPMENT|DEVELOPMENTS|ENTERPRISES|ASSOCIATES|PARTNERSHIP|PARTNERS"
     r"|GROUP|CAPITAL|REALTY|CONSTRUCTION|SERVICES|SOLUTIONS|CONSULTING"
     r"|VENTURES|BUILDERS|FINANCIAL|MORTGAGE|BANK|CREDIT UNION"
-    r"|ONTARIO|CANADA|NAMED INDIVIDUAL)\b",
+    r"|ONTARIO|CANADA|NAMED INDIVIDUAL"
+    # Organizations / institutions
+    r"|INDUSTRIES|FOUNDATION|INSTITUTE|SOCIETY|COUNCIL|AUTHORITY|MINISTRY"
+    r"|COMMISSION|BUREAU|AGENCY|GUILD|LEAGUE|FEDERATION|ASSOCIATION|MUSEUM"
+    r"|LIBRARY|HOSPITAL|CLINIC|COOPERATIVE|CO-OP|COOP"
+    # Education
+    r"|SCHOOL|COLLEGE|UNIVERSITY|ACADEMY"
+    # Religious
+    r"|CHURCH|TEMPLE|CENTRE|CENTER|BAPTIST|BUDDHIST|CHRISTIAN|CATHOLIC"
+    r"|ISLAMIC|JEWISH|LUTHERAN|PRESBYTERIAN|PENTECOSTAL|METHODIST|EVANGELICAL"
+    # Foreign company suffixes
+    r"|BV|AG|GMBH|SA|SAS|SPRL|NV|PLC|PTY|SARL|OY|AB"
+    # Commercial
+    r"|PLAZA|MALL|MARKET|STORE|STORES|RESTAURANT|HOTEL|MOTEL"
+    r"|INTERNATIONAL|NATIONAL|GLOBAL|WORLDWIDE)\b",
     re.IGNORECASE,
 )
 
@@ -209,6 +226,69 @@ def _scan_appearances(parsed_dir: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Address comparison helpers for Rule 3b
+# ---------------------------------------------------------------------------
+
+_SUITE_RE = re.compile(
+    r",?\s*(?:SUITE|STE|UNIT|APT|FLOOR|FL|RM|ROOM|#)\s*\d+\w*",
+    re.I,
+)
+
+
+def _addresses_share_base(addr_a: str, addr_b: str) -> bool:
+    """Check if two addresses share the same base street address.
+
+    Strips suite/unit/floor numbers and compares the remaining base.
+    Both addresses must have a street number + street name to match.
+    """
+    if not addr_a or not addr_b:
+        return False
+
+    a = normalize_address(addr_a)
+    b = normalize_address(addr_b)
+
+    # Strip suite/unit/floor
+    a = _SUITE_RE.sub("", a).strip().rstrip(",").strip()
+    b = _SUITE_RE.sub("", b).strip().rstrip(",").strip()
+
+    if not a or not b:
+        return False
+
+    # Must start with a street number to be a real street address
+    if not re.match(r"\d", a) or not re.match(r"\d", b):
+        return False
+
+    # Compare: require the street portion (before the city) to match
+    # Take at least the first two tokens (street number + street name start)
+    # and compare the full base address
+    return a == b
+
+
+def _build_entity_addresses(
+    appearances: list[dict],
+    by_name: dict[str, list[int]],
+) -> dict[str, str]:
+    """Build a lookup: normalized entity name -> most common normalized address.
+
+    Only includes entities that appear in by_name (non-numbered companies).
+    """
+    from collections import Counter
+
+    entity_addrs: dict[str, list[str]] = defaultdict(list)
+    for norm_name, indices in by_name.items():
+        for i in indices:
+            addr = appearances[i].get("address", "").strip()
+            if addr and len(addr) >= 10:
+                entity_addrs[norm_name].append(normalize_address(addr))
+
+    result: dict[str, str] = {}
+    for norm_name, addrs in entity_addrs.items():
+        if addrs:
+            result[norm_name] = Counter(addrs).most_common(1)[0][0]
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Clustering
 # ---------------------------------------------------------------------------
 
@@ -221,7 +301,8 @@ def _cluster_appearances(
     Rules:
     1. Same normalized name (non-numbered companies only)
     2. Same phone number (with dynamic blacklist for high-fan-out phones)
-    3. Same filtered alias / alternate name
+    3a. Brand-token clustering (distinctive brand portion of company names)
+    3b. Alternate names — address-gated directed linking (c/o references)
     4. Same normalized address (companies only, min 10 chars)
     5. Numbered company + same contact
     All transitive via union-find.
@@ -280,22 +361,106 @@ def _cluster_appearances(
                     for j in range(1, len(contact_indices)):
                         uf.union(contact_indices[0], contact_indices[j])
 
-    # --- Rule 3: Alias matching (filtered) ---
-    by_alias: dict[str, list[int]] = defaultdict(list)
+    # --- Rule 3a: Brand-token clustering ---
+    # Extract a distinctive brand token from each non-numbered company name,
+    # then merge all appearances that share the same token.
+    token_to_indices: dict[str, list[int]] = defaultdict(list)
+    token_to_names: dict[str, set[str]] = defaultdict(set)
     for i, app in enumerate(appearances):
-        seen: set[str] = set()
-        for alias in list(app.get("aliases", [])) + list(app.get("alternate_names", [])):
-            cleaned = _clean_alias(alias, app["name"])
-            if cleaned and cleaned not in seen:
-                seen.add(cleaned)
-                by_alias[cleaned].append(i)
+        if _is_numbered_company(app["name"]):
+            continue
+        token = extract_brand_token(app["name"])
+        if token:
+            token_to_indices[token].append(i)
+            token_to_names[token].add(normalize_name(app["name"]))
 
-    for indices in by_alias.values():
-        if len(indices) > 1:
-            for j in range(1, len(indices)):
-                uf.union(indices[0], indices[j])
+    # Prefix matching: if token A is a prefix of token B (A is 4+ chars),
+    # merge their appearance lists under the shorter token
+    sorted_tokens = sorted(token_to_indices.keys())
+    prefix_map: dict[str, str] = {}  # longer -> shorter
+    for t_idx, token_a in enumerate(sorted_tokens):
+        if len(token_a) < 4:
+            continue
+        prefix_a = token_a + " "
+        for token_b in sorted_tokens[t_idx + 1:]:
+            if token_b.startswith(prefix_a):
+                # Resolve chains: map to the ultimate shorter token
+                effective_a = prefix_map.get(token_a, token_a)
+                prefix_map[token_b] = effective_a
 
-    # --- Rule 4: Company address matching ---
+    # Merge prefix-mapped tokens
+    for longer, shorter in prefix_map.items():
+        if longer in token_to_indices:
+            token_to_indices[shorter].extend(token_to_indices.pop(longer))
+            token_to_names[shorter] |= token_to_names.pop(longer, set())
+
+    # Fan-out cap: skip tokens connecting 8+ distinct entity names
+    for token, indices in token_to_indices.items():
+        if len(indices) < 2:
+            continue
+        if len(token_to_names[token]) >= 8:
+            continue
+        for j in range(1, len(indices)):
+            uf.union(indices[0], indices[j])
+
+    # --- Rule 3b: Alternate names — address-gated directed linking ---
+    # alternate_names come from c/o routing and contain parent company names.
+    # Only merge when there's corroborating evidence: the SPV's corporate
+    # address matches the target entity's address.  This distinguishes
+    # ownership (same address) from management/lending (different address).
+    _ALT_NAME_MAX_COMBINED = 50
+
+    entity_addresses = _build_entity_addresses(appearances, by_name)
+
+    # Track component names efficiently: root -> set of normalized names
+    comp_names: dict[int, set[str]] = {}
+
+    def _get_comp_names(idx: int) -> set[str]:
+        root = uf.find(idx)
+        if root not in comp_names:
+            names_set: set[str] = set()
+            for j in range(n):
+                if uf.find(j) == root:
+                    names_set.add(normalize_name(appearances[j]["name"]))
+            comp_names[root] = names_set
+        return comp_names[root]
+
+    for i, app in enumerate(appearances):
+        for alt in app.get("alternate_names", []):
+            if not alt:
+                continue
+            norm_alt = normalize_name(alt)
+            targets = by_name.get(norm_alt, [])
+            if not targets:
+                continue
+            target = targets[0]
+            # Skip if already in same component
+            if uf.find(i) == uf.find(target):
+                continue
+
+            # Address gate: only merge if source address matches target's
+            # most common address (ignoring suite/unit differences)
+            src_addr = app.get("address", "").strip()
+            tgt_addr = entity_addresses.get(norm_alt, "")
+            if not _addresses_share_base(src_addr, tgt_addr):
+                continue
+
+            # Size guard: skip if combined would be too large
+            src_names = _get_comp_names(i)
+            tgt_names = _get_comp_names(target)
+            combined = len(src_names | tgt_names)
+            if combined > _ALT_NAME_MAX_COMBINED:
+                continue
+            uf.union(i, target)
+            # Update cache: merge name sets under new root
+            new_root = uf.find(i)
+            merged = src_names | tgt_names
+            # Clear old roots, set new
+            comp_names.pop(uf.find(i), None)
+            comp_names.pop(uf.find(target), None)
+            comp_names[new_root] = merged
+
+    # --- Rule 4: Company address matching (with fan-out cap) ---
     by_addr: dict[str, list[int]] = defaultdict(list)
     for i, app in enumerate(appearances):
         if not app["is_company"]:
@@ -306,10 +471,21 @@ def _cluster_appearances(
         norm_addr = normalize_address(addr)
         by_addr[norm_addr].append(i)
 
-    for indices in by_addr.values():
-        if len(indices) > 1:
-            for j in range(1, len(indices)):
-                uf.union(indices[0], indices[j])
+    # Cap: skip addresses connecting too many distinct entity names
+    # (commercial office towers have many unrelated tenants)
+    addr_name_groups: dict[str, set[str]] = defaultdict(set)
+    for addr, indices in by_addr.items():
+        for i in indices:
+            addr_name_groups[addr].add(normalize_name(appearances[i]["name"]))
+    high_fanout_addrs = {
+        a for a, names in addr_name_groups.items() if len(names) >= 5
+    }
+
+    for addr, indices in by_addr.items():
+        if len(indices) < 2 or addr in high_fanout_addrs:
+            continue
+        for j in range(1, len(indices)):
+            uf.union(indices[0], indices[j])
 
     # --- Rule 5: Numbered company + same contact ---
     numbered_by_name: dict[str, list[int]] = defaultdict(list)

@@ -10,7 +10,7 @@ export async function fetchApi<T>(path: string): Promise<T> {
 
 export async function mutateApi<T>(
   path: string,
-  method: "POST" | "PUT" | "DELETE",
+  method: "POST" | "PUT" | "DELETE" | "PATCH",
   body?: unknown,
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

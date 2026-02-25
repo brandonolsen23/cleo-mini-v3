@@ -1,4 +1,4 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowLeft } from "@phosphor-icons/react";
 import { useTransaction } from "../../api/transactions";
 import type { PartyInfo } from "../../types/transaction";
@@ -26,8 +26,38 @@ function PartyCard({ title, party }: { title: string; party: PartyInfo }) {
       </CardHeader>
       <CardContent>
         <dl className="grid grid-cols-2 gap-x-6">
-          <Field label="Name" value={party.name} />
-          <Field label="Contact" value={party.contact} />
+          <div className="py-1.5">
+            <dt className="text-xs text-muted-foreground font-medium">Name</dt>
+            <dd className="text-sm mt-0.5">
+              {party.group_id ? (
+                <Link
+                  to={`/parties/${party.group_id}`}
+                  className="text-primary hover:underline"
+                >
+                  {party.name}
+                </Link>
+              ) : (
+                party.name
+              )}
+            </dd>
+          </div>
+          {party.contact ? (
+            <div className="py-1.5">
+              <dt className="text-xs text-muted-foreground font-medium">Contact</dt>
+              <dd className="text-sm mt-0.5">
+                {party.contact_id ? (
+                  <Link
+                    to={`/contacts/${encodeURIComponent(party.contact_id)}`}
+                    className="text-primary hover:underline"
+                  >
+                    {party.contact}
+                  </Link>
+                ) : (
+                  party.contact
+                )}
+              </dd>
+            </div>
+          ) : null}
           <Field label="Phone" value={party.phone} />
           <Field label="Address" value={party.address} />
           {party.attention && <Field label="Attention" value={party.attention} />}

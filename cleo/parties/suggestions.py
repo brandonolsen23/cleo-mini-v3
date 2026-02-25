@@ -218,10 +218,21 @@ def get_grouping_reason(
 
     Scans parsed transaction data for the target name and all other names in
     the group. Returns a list of linkage evidence dicts:
-      {"type": "phone"|"contact"|"alias", "value": str, "linked_names": [str], "rt_ids": [str]}
+      {"type": "phone"|"contact"|"alias"|"address"|"chain", "value": str,
+       "linked_names": [str], "rt_ids": [str], "detail": str}
+
+    For direct reasons, each dict also includes:
+      "target_rt_id", "target_role", "linked_rt_data": [{"name", "rt_id", "role"}]
+
+    For chain reasons, each dict also includes:
+      "chain": [{"name", "rt_id", "role", "link_type", "link_value"}, ...]
+
+    If no direct link is found, traces transitive chains (BFS) through shared
+    attributes across group members to explain how the name ended up in the group.
     """
     from pathlib import Path
     import json
+    from collections import deque
 
     p = parties.get(group_id)
     if not p:
@@ -234,10 +245,22 @@ def get_grouping_reason(
     if not other_norms:
         return []  # Only name in the group
 
+    # Map norm -> original name for display
+    norm_to_name: dict[str, str] = {}
+    for n in p.get("names", []):
+        nn = normalize_name(n)
+        if nn not in norm_to_name:
+            norm_to_name[nn] = n
+
     # Collect per-name attributes from parsed data
-    name_phones: dict[str, dict[str, list[str]]] = {}  # norm -> {phone: [rt_ids]}
+    name_phones: dict[str, dict[str, list[str]]] = {}   # norm -> {phone: [rt_ids]}
     name_contacts: dict[str, dict[str, list[str]]] = {}  # norm -> {CONTACT: [rt_ids]}
-    name_aliases: dict[str, dict[str, list[str]]] = {}  # norm -> {ALIAS: [rt_ids]}
+    name_aliases: dict[str, dict[str, list[str]]] = {}   # norm -> {ALIAS: [rt_ids]}
+    name_addresses: dict[str, dict[str, list[str]]] = {} # norm -> {NORM_ADDR: [rt_ids]}
+    # Store raw address for display
+    raw_addresses: dict[str, str] = {}  # NORM_ADDR -> original address
+    # Track name roles: norm -> {rt_id: role}
+    name_roles: dict[str, dict[str, str]] = {}
 
     for rt_id in p.get("rt_ids", []):
         f = parsed_dir / f"{rt_id}.json"
@@ -254,6 +277,9 @@ def get_grouping_reason(
             if norm not in group_norms:
                 continue
 
+            role = "seller" if party_key == "transferor" else "buyer"
+            name_roles.setdefault(norm, {})[rt_id] = role
+
             phone = (party.get("phone") or "").strip()
             if phone:
                 name_phones.setdefault(norm, {}).setdefault(phone, []).append(rt_id)
@@ -267,10 +293,31 @@ def get_grouping_reason(
                 if a:
                     name_aliases.setdefault(norm, {}).setdefault(a, []).append(rt_id)
 
-    # Find shared phones
+            address = (party.get("address") or "").strip()
+            if address and len(address) >= 10:
+                norm_addr = normalize_address(address)
+                name_addresses.setdefault(norm, {}).setdefault(norm_addr, []).append(rt_id)
+                if norm_addr not in raw_addresses:
+                    raw_addresses[norm_addr] = address
+
+    # Helper: find RT IDs where a norm has a given attribute
+    def _find_rt_for_attr(norm, attr_type, attr_val):
+        if attr_type == "phone":
+            return name_phones.get(norm, {}).get(attr_val, [])
+        elif attr_type == "contact":
+            return name_contacts.get(norm, {}).get(attr_val, [])
+        elif attr_type == "address":
+            na = normalize_address(attr_val)
+            return name_addresses.get(norm, {}).get(na, [])
+        elif attr_type == "alias":
+            return name_aliases.get(norm, {}).get(attr_val, [])
+        return []
+
+    # Find direct links from target to any other group member
     target_phones = name_phones.get(target_norm, {})
     target_contacts = name_contacts.get(target_norm, {})
     target_aliases = name_aliases.get(target_norm, {})
+    target_addresses = name_addresses.get(target_norm, {})
 
     reasons: list[dict] = []
 
@@ -283,43 +330,32 @@ def get_grouping_reason(
                 "value": alias,
                 "linked_names": [],
                 "rt_ids": sorted(set(rt_ids)),
-                "detail": f"Alias matches group name",
+                "detail": "Alias matches group name",
             })
 
     # Shared phones with other names
     for phone, rt_ids in target_phones.items():
         linked = []
-        linked_rts = []
         for other_norm in other_norms:
             other_phones = name_phones.get(other_norm, {})
             if phone in other_phones:
-                # Find original name string
-                for n in p["names"]:
-                    if normalize_name(n) == other_norm:
-                        linked.append(n)
-                        break
-                linked_rts.extend(other_phones[phone])
+                linked.append(norm_to_name.get(other_norm, other_norm))
         if linked:
             reasons.append({
                 "type": "phone",
                 "value": phone,
-                "linked_names": linked,
+                "linked_names": linked[:5],
                 "rt_ids": sorted(set(rt_ids)),
-                "detail": f"Shared with {', '.join(linked)}",
+                "detail": f"Shared with {', '.join(linked[:3])}{'...' if len(linked) > 3 else ''}",
             })
 
     # Shared contacts with other names
     for contact, rt_ids in target_contacts.items():
         linked = []
-        linked_rts = []
         for other_norm in other_norms:
             other_contacts = name_contacts.get(other_norm, {})
             if contact in other_contacts:
-                for n in p["names"]:
-                    if normalize_name(n) == other_norm:
-                        linked.append(n)
-                        break
-                linked_rts.extend(other_contacts[contact])
+                linked.append(norm_to_name.get(other_norm, other_norm))
         if linked:
             reasons.append({
                 "type": "contact",
@@ -328,5 +364,151 @@ def get_grouping_reason(
                 "rt_ids": sorted(set(rt_ids)),
                 "detail": f"Shared with {', '.join(linked[:3])}{'...' if len(linked) > 3 else ''}",
             })
+
+    # Shared addresses with other names (Rule 4 in clustering)
+    for norm_addr, rt_ids in target_addresses.items():
+        linked = []
+        for other_norm in other_norms:
+            other_addrs = name_addresses.get(other_norm, {})
+            if norm_addr in other_addrs:
+                linked.append(norm_to_name.get(other_norm, other_norm))
+        if linked:
+            raw = raw_addresses.get(norm_addr, norm_addr)
+            reasons.append({
+                "type": "address",
+                "value": raw,
+                "linked_names": linked[:5],
+                "rt_ids": sorted(set(rt_ids)),
+                "detail": f"Shared party address with {', '.join(linked[:3])}{'...' if len(linked) > 3 else ''}",
+            })
+
+    # Enhance direct reasons with RT data for chain viewer
+    if reasons:
+        for r in reasons:
+            rts = _find_rt_for_attr(target_norm, r["type"], r["value"])
+            rt_id = rts[0] if rts else None
+            r["target_rt_id"] = rt_id
+            r["target_role"] = name_roles.get(target_norm, {}).get(rt_id)
+
+            linked_data = []
+            for ln in r.get("linked_names", []):
+                ln_norm = normalize_name(ln)
+                ln_rts = _find_rt_for_attr(ln_norm, r["type"], r["value"])
+                ln_rt = ln_rts[0] if ln_rts else None
+                ln_role = name_roles.get(ln_norm, {}).get(ln_rt)
+                linked_data.append({"name": ln, "rt_id": ln_rt, "role": ln_role})
+            r["linked_rt_data"] = linked_data
+        return reasons
+
+    # ---- Transitive chain tracing via BFS ----
+    # Build adjacency graph: norm -> [(other_norm, link_type, link_value)]
+    adj: dict[str, list[tuple[str, str, str]]] = {nn: [] for nn in group_norms}
+
+    # Add edges for shared phones
+    phone_to_norms: dict[str, list[str]] = {}
+    for nn, phones in name_phones.items():
+        for ph in phones:
+            phone_to_norms.setdefault(ph, []).append(nn)
+    for ph, norms in phone_to_norms.items():
+        if len(norms) >= 2:
+            for i in range(len(norms)):
+                for j in range(i + 1, len(norms)):
+                    adj[norms[i]].append((norms[j], "phone", ph))
+                    adj[norms[j]].append((norms[i], "phone", ph))
+
+    # Add edges for shared contacts
+    contact_to_norms: dict[str, list[str]] = {}
+    for nn, contacts in name_contacts.items():
+        for c in contacts:
+            contact_to_norms.setdefault(c, []).append(nn)
+    for c, norms in contact_to_norms.items():
+        if len(norms) >= 2:
+            for i in range(len(norms)):
+                for j in range(i + 1, len(norms)):
+                    adj[norms[i]].append((norms[j], "contact", c))
+                    adj[norms[j]].append((norms[i], "contact", c))
+
+    # Add edges for shared addresses
+    addr_to_norms: dict[str, list[str]] = {}
+    for nn, addrs in name_addresses.items():
+        for a in addrs:
+            addr_to_norms.setdefault(a, []).append(nn)
+    for a, norms in addr_to_norms.items():
+        if len(norms) >= 2:
+            raw = raw_addresses.get(a, a)
+            for i in range(len(norms)):
+                for j in range(i + 1, len(norms)):
+                    adj[norms[i]].append((norms[j], "address", raw))
+                    adj[norms[j]].append((norms[i], "address", raw))
+
+    # BFS from target to find shortest chain to any other group member
+    visited = {target_norm}
+    queue: deque[tuple[str, list[tuple[str, str, str]]]] = deque()
+    queue.append((target_norm, []))
+
+    while queue:
+        current, path = queue.popleft()
+        for neighbor, link_type, link_val in adj.get(current, []):
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            new_path = path + [(neighbor, link_type, link_val)]
+
+            if neighbor in other_norms:
+                # Found chain — build structured chain steps
+                chain_norms = [target_norm] + [step[0] for step in new_path]
+                chain_links = [(step[1], step[2]) for step in new_path]
+
+                chain_steps = []
+                for i, cn in enumerate(chain_norms):
+                    out_type = chain_links[i][0] if i < len(chain_links) else None
+                    out_val = chain_links[i][1] if i < len(chain_links) else None
+                    in_type = chain_links[i - 1][0] if i > 0 else None
+                    in_val = chain_links[i - 1][1] if i > 0 else None
+
+                    # Pick RT: prefer outgoing link attr, then incoming, then any
+                    rt_id = None
+                    if out_type:
+                        rts = _find_rt_for_attr(cn, out_type, out_val)
+                        if rts:
+                            rt_id = rts[0]
+                    if not rt_id and in_type:
+                        rts = _find_rt_for_attr(cn, in_type, in_val)
+                        if rts:
+                            rt_id = rts[0]
+                    if not rt_id:
+                        all_rts = list(name_roles.get(cn, {}).keys())
+                        rt_id = all_rts[0] if all_rts else None
+
+                    role = name_roles.get(cn, {}).get(rt_id)
+
+                    chain_steps.append({
+                        "name": norm_to_name.get(cn, cn),
+                        "rt_id": rt_id,
+                        "role": role,
+                        "link_type": out_type,
+                        "link_value": out_val,
+                    })
+
+                # Text format for backward compat
+                steps_text = []
+                prev_name = norm_to_name.get(target_norm, name)
+                for step_norm, step_type, step_val in new_path:
+                    sn = norm_to_name.get(step_norm, step_norm)
+                    steps_text.append(f"{prev_name} --[{step_type}: {step_val}]--> {sn}")
+                    prev_name = sn
+                chain_detail = " | ".join(steps_text)
+
+                reasons.append({
+                    "type": "chain",
+                    "value": chain_detail,
+                    "linked_names": [norm_to_name.get(s[0], s[0]) for s in new_path],
+                    "rt_ids": [],
+                    "detail": f"Linked via {len(new_path)}-step chain: {chain_detail}",
+                    "chain": chain_steps,
+                })
+                return reasons
+
+            queue.append((neighbor, new_path))
 
     return reasons

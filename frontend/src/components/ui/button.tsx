@@ -1,57 +1,89 @@
 import * as React from "react";
-import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
+import {
+  Button as RadixButton,
+  IconButton as RadixIconButton,
+} from "@radix-ui/themes";
 
 import { cn } from "@/lib/utils";
 
-const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-xl text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
-  {
-    variants: {
-      variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90",
-        outline:
-          "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
-        secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
-        link: "text-primary underline-offset-4 hover:underline",
-      },
-      size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-9 px-3",
-        lg: "h-11 px-8",
-        icon: "h-10 w-10",
-        "icon-sm": "h-6 w-6",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-      size: "default",
-    },
-  }
-);
+type ButtonVariant =
+  | "default"
+  | "destructive"
+  | "outline"
+  | "secondary"
+  | "ghost"
+  | "link";
+type ButtonSize = "default" | "sm" | "lg" | "icon" | "icon-sm";
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
+  extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: ButtonVariant;
+  size?: ButtonSize;
   asChild?: boolean;
 }
 
+const variantMap: Record<
+  string,
+  { variant: "solid" | "soft" | "outline" | "ghost"; color?: "red" | "gray" }
+> = {
+  default: { variant: "solid" },
+  destructive: { variant: "solid", color: "red" },
+  outline: { variant: "outline" },
+  secondary: { variant: "soft", color: "gray" },
+  ghost: { variant: "ghost" },
+  link: { variant: "ghost" },
+};
+
+const sizeMap: Record<string, "1" | "2" | "3"> = {
+  default: "3",
+  sm: "2",
+  lg: "3",
+  icon: "3",
+  "icon-sm": "1",
+};
+
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, ...props }, ref) => {
-    const Comp = asChild ? Slot : "button";
+  (
+    {
+      className,
+      variant = "default",
+      size = "default",
+      asChild,
+      ...props
+    },
+    ref
+  ) => {
+    const mapped = variantMap[variant] ?? variantMap.default;
+    const radixSize = sizeMap[size] ?? "3";
+    const isIcon = size === "icon" || size === "icon-sm";
+
+    if (isIcon) {
+      return (
+        <RadixIconButton
+          ref={ref}
+          size={radixSize}
+          variant={mapped.variant}
+          color={mapped.color}
+          className={cn(className)}
+          asChild={asChild}
+          {...(props as any)}
+        />
+      );
+    }
+
     return (
-      <Comp
-        className={cn(buttonVariants({ variant, size, className }))}
+      <RadixButton
         ref={ref}
-        {...props}
+        size={radixSize}
+        variant={mapped.variant}
+        color={mapped.color}
+        className={cn(className)}
+        asChild={asChild}
+        {...(props as any)}
       />
     );
   }
 );
 Button.displayName = "Button";
 
-export { Button, buttonVariants };
+export { Button };

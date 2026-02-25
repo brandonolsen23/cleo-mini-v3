@@ -187,6 +187,34 @@ const columns = [
     enableGlobalFilter: false,
     filterFn: (row) => row.original.has_phone,
   }),
+  columnHelper.accessor("building_sf", {
+    header: "Bldg SF",
+    enableSorting: false,
+    enableGlobalFilter: false,
+    filterFn: (row, _columnId, filterValue: { min: string; max: string }) => {
+      const raw = row.original.building_sf?.replace(/[^0-9.]/g, "");
+      if (!raw) return false;
+      const val = parseFloat(raw);
+      if (isNaN(val)) return false;
+      if (filterValue.min && val < parseFloat(filterValue.min)) return false;
+      if (filterValue.max && val > parseFloat(filterValue.max)) return false;
+      return true;
+    },
+  }),
+  columnHelper.accessor("site_area", {
+    header: "Acres",
+    enableSorting: false,
+    enableGlobalFilter: false,
+    filterFn: (row, _columnId, filterValue: { min: string; max: string }) => {
+      const raw = row.original.site_area?.replace(/[^0-9.]/g, "");
+      if (!raw) return false;
+      const val = parseFloat(raw);
+      if (isNaN(val)) return false;
+      if (filterValue.min && val < parseFloat(filterValue.min)) return false;
+      if (filterValue.max && val > parseFloat(filterValue.max)) return false;
+      return true;
+    },
+  }),
 ];
 
 export default function PropertiesPage() {
@@ -205,6 +233,10 @@ export default function PropertiesPage() {
   const priceMax = searchParams.get("pmax") || "";
   const popMin = searchParams.get("popmin") || "";
   const popMax = searchParams.get("popmax") || "";
+  const bsMin = searchParams.get("bsmin") || "";
+  const bsMax = searchParams.get("bsmax") || "";
+  const acMin = searchParams.get("acmin") || "";
+  const acMax = searchParams.get("acmax") || "";
   const contactOnly = searchParams.get("contact") === "1";
   const phoneOnly = searchParams.get("phone") === "1";
   const selectedCategories = useMemo(() => {
@@ -215,7 +247,7 @@ export default function PropertiesPage() {
     const raw = searchParams.get("brands");
     return raw ? raw.split(",").filter(Boolean) : [];
   }, [searchParams]);
-  const hasFilters = !!(yearFrom || yearTo || priceMin || priceMax || popMin || popMax || contactOnly || phoneOnly || selectedCategories.length || selectedBrands.length);
+  const hasFilters = !!(yearFrom || yearTo || priceMin || priceMax || popMin || popMax || bsMin || bsMax || acMin || acMax || contactOnly || phoneOnly || selectedCategories.length || selectedBrands.length);
   const [filtersOpen, setFiltersOpen] = useState(hasFilters);
 
   // Category dropdown options
@@ -263,18 +295,24 @@ export default function PropertiesPage() {
     if (phoneOnly) {
       filters.push({ id: "has_phone", value: true });
     }
+    if (bsMin || bsMax) {
+      filters.push({ id: "building_sf", value: { min: bsMin, max: bsMax } });
+    }
+    if (acMin || acMax) {
+      filters.push({ id: "site_area", value: { min: acMin, max: acMax } });
+    }
     if (selectedCategories.length || selectedBrands.length) {
       filters.push({ id: "brands", value: { categories: selectedCategories, brands: selectedBrands } });
     }
     return filters;
-  }, [yearFrom, yearTo, priceMin, priceMax, popMin, popMax, contactOnly, phoneOnly, selectedCategories, selectedBrands]);
+  }, [yearFrom, yearTo, priceMin, priceMax, popMin, popMax, bsMin, bsMax, acMin, acMax, contactOnly, phoneOnly, selectedCategories, selectedBrands]);
 
   const table = useReactTable({
     data,
     columns,
     state: {
       sorting, globalFilter, pagination, columnFilters,
-      columnVisibility: { has_contact: false, has_phone: false, population: false, latest_sale_year: false },
+      columnVisibility: { has_contact: false, has_phone: false, population: false, latest_sale_year: false, building_sf: false, site_area: false },
     },
     globalFilterFn,
     onSortingChange: setSorting,
@@ -351,7 +389,7 @@ export default function PropertiesPage() {
           Filters
           {hasFilters && (
             <span className="ml-1 px-1.5 py-0.5 bg-secondary text-secondary-foreground rounded-full text-[10px] font-semibold">
-              {[yearFrom || yearTo ? 1 : 0, priceMin || priceMax ? 1 : 0, popMin || popMax ? 1 : 0, contactOnly ? 1 : 0, phoneOnly ? 1 : 0, selectedCategories.length ? 1 : 0, selectedBrands.length ? 1 : 0].reduce((a, b) => a + b, 0)}
+              {[yearFrom || yearTo ? 1 : 0, priceMin || priceMax ? 1 : 0, popMin || popMax ? 1 : 0, bsMin || bsMax ? 1 : 0, acMin || acMax ? 1 : 0, contactOnly ? 1 : 0, phoneOnly ? 1 : 0, selectedCategories.length ? 1 : 0, selectedBrands.length ? 1 : 0].reduce((a, b) => a + b, 0)}
             </span>
           )}
           {filtersOpen ? <CaretUp size={12} /> : <CaretDown size={12} />}
@@ -423,6 +461,50 @@ export default function PropertiesPage() {
                 <Button variant="ghost" size="icon-sm" className="rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => updateParams({ popmin: null, popmax: null, page: null })}><X size={12} /></Button>
               )}
             </div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider">Bldg SF</span>
+              <input
+                type="number"
+                placeholder="Min"
+                value={bsMin}
+                onChange={(e) => updateParams({ bsmin: e.target.value || null, page: null })}
+                className="px-2 py-1 w-24 text-sm border border-input bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <span className="text-muted-foreground">to</span>
+              <input
+                type="number"
+                placeholder="Max"
+                value={bsMax}
+                onChange={(e) => updateParams({ bsmax: e.target.value || null, page: null })}
+                className="px-2 py-1 w-24 text-sm border border-input bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              {(bsMin || bsMax) && (
+                <Button variant="ghost" size="icon-sm" className="rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => updateParams({ bsmin: null, bsmax: null, page: null })}><X size={12} /></Button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider">Acres</span>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Min"
+                value={acMin}
+                onChange={(e) => updateParams({ acmin: e.target.value || null, page: null })}
+                className="px-2 py-1 w-20 text-sm border border-input bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <span className="text-muted-foreground">to</span>
+              <input
+                type="number"
+                step="0.01"
+                placeholder="Max"
+                value={acMax}
+                onChange={(e) => updateParams({ acmax: e.target.value || null, page: null })}
+                className="px-2 py-1 w-20 text-sm border border-input bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              {(acMin || acMax) && (
+                <Button variant="ghost" size="icon-sm" className="rounded-full text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => updateParams({ acmin: null, acmax: null, page: null })}><X size={12} /></Button>
+              )}
+            </div>
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-1.5 text-sm cursor-pointer select-none">
                 <Checkbox
@@ -466,7 +548,7 @@ export default function PropertiesPage() {
                 variant="ghost"
                 size="sm"
                 className="h-7 text-xs"
-                onClick={() => updateParams({ yf: null, yt: null, pmin: null, pmax: null, popmin: null, popmax: null, contact: null, phone: null, cat: null, brands: null, page: null })}
+                onClick={() => updateParams({ yf: null, yt: null, pmin: null, pmax: null, popmin: null, popmax: null, bsmin: null, bsmax: null, acmin: null, acmax: null, contact: null, phone: null, cat: null, brands: null, page: null })}
               >
                 <X size={12} />
                 Clear all

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import LinkedInLink from "../shared/LinkedInLink";
 
 export default function CrmContactDetailPage() {
   const { crmId } = useParams<{ crmId: string }>();
@@ -96,6 +97,7 @@ export default function CrmContactDetailPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-semibold text-foreground">{data.name}</h1>
+            <LinkedInLink name={data.name} size={18} />
             <Badge variant="outline" className="text-xs font-mono">{data.crm_id}</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
@@ -253,7 +255,7 @@ export default function CrmContactDetailPage() {
           <Card>
             <CardHeader className="px-5 py-3 border-b border-border">
               <CardTitle className="text-sm font-semibold uppercase tracking-wider">
-                Party Groups ({data.party_group_ids.length})
+                Companies ({data.party_group_ids.length})
               </CardTitle>
             </CardHeader>
             <CardContent className="px-5 py-4">

@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import MapGL, { Source, Layer, Popup } from "react-map-gl/mapbox";
 import type { MapRef, MapMouseEvent } from "react-map-gl/mapbox";
 import type { LayerProps } from "react-map-gl/mapbox";
-import type { FeatureCollection, Point } from "geojson";
+import type { FeatureCollection, Point, Polygon, MultiPolygon } from "geojson";
 import type { GeoJSONSource } from "mapbox-gl";
 import { MagnifyingGlass, SlidersHorizontal, CaretDown, CaretUp, X } from "@phosphor-icons/react";
 import { useProperties } from "../../api/properties";
@@ -28,13 +28,13 @@ const clusterLayer: LayerProps = {
     "circle-color": [
       "step",
       ["get", "point_count"],
-      "#60a5fa", // blue-400: < 10
+      "#a8a29e", // stone-400: < 10
       10,
-      "#3b82f6", // blue-500: 10-50
+      "#78716c", // stone-500: 10-50
       50,
-      "#2563eb", // blue-600: 50-200
+      "#57534e", // stone-600: 50-200
       200,
-      "#1d4ed8", // blue-700: 200+
+      "#44403c", // stone-700: 200+
     ],
     "circle-radius": [
       "step",
@@ -64,18 +64,91 @@ const clusterCountLayer: LayerProps = {
   },
 };
 
+// Radix step 8 hex values for pin coloring
+const PIN_STATUS_COLORS: [string, string][] = [
+  ["not_started", "#bcbbb5"],
+  ["attempted_contact", "#5eb1ef"],
+  ["interested", "#3db9cf"],
+  ["listed", "#53b9ab"],
+  ["active_deal", "#53b9ab"],
+  ["in_negotiation", "#56ba9f"],
+  ["under_contract", "#65ba74"],
+  ["closed_won", "#8db654"],
+  ["lost_cancelled", "#9b9ef0"],
+  ["do_not_contact", "#ec8e7b"],
+];
+
 const unclusteredPointLayer: LayerProps = {
   id: "unclustered-point",
   type: "circle",
   source: "properties",
   filter: ["!", ["has", "point_count"]],
   paint: {
-    "circle-color": "#3b82f6",
+    "circle-color": [
+      "match",
+      ["get", "pin_status"],
+      ...PIN_STATUS_COLORS.flat(),
+      "#bcbbb5", // fallback
+    ] as any,
     "circle-radius": 7,
     "circle-stroke-width": 2,
     "circle-stroke-color": "#ffffff",
   },
 };
+
+const footprintFillLayer: LayerProps = {
+  id: "footprint-fill",
+  type: "fill",
+  source: "footprints",
+  paint: {
+    "fill-color": [
+      "case",
+      ["has", "matched_prop"],
+      "#3b82f6", // blue for matched
+      "#9ca3af", // gray for unmatched
+    ],
+    "fill-opacity": 0.25,
+  },
+};
+
+const footprintLineLayer: LayerProps = {
+  id: "footprint-line",
+  type: "line",
+  source: "footprints",
+  paint: {
+    "line-color": "#1e40af",
+    "line-width": 1.5,
+    "line-opacity": 0.7,
+  },
+};
+
+const parcelFillLayer: LayerProps = {
+  id: "parcel-fill",
+  type: "fill",
+  source: "parcels",
+  paint: {
+    "fill-color": "#f59e0b", // amber
+    "fill-opacity": 0.15,
+  },
+};
+
+const parcelLineLayer: LayerProps = {
+  id: "parcel-line",
+  type: "line",
+  source: "parcels",
+  paint: {
+    "line-color": "#d97706", // amber-600
+    "line-width": 1.5,
+    "line-opacity": 0.7,
+  },
+};
+
+const EMPTY_FC: FeatureCollection<Polygon | MultiPolygon> = {
+  type: "FeatureCollection",
+  features: [],
+};
+
+const FOOTPRINT_ZOOM_THRESHOLD = 15;
 
 function parsePriceNumeric(price: string): number {
   const cleaned = price.replace(/[^0-9.]/g, "");
@@ -108,6 +181,10 @@ export default function MapPage() {
   const priceMax = searchParams.get("pmax") || "";
   const popMin = searchParams.get("popmin") || "";
   const popMax = searchParams.get("popmax") || "";
+  const bsMin = searchParams.get("bsmin") || "";
+  const bsMax = searchParams.get("bsmax") || "";
+  const acMin = searchParams.get("acmin") || "";
+  const acMax = searchParams.get("acmax") || "";
   const txnsOnly = searchParams.get("txns") === "1";
   const noTxns = searchParams.get("notxns") === "1";
   const contactOnly = searchParams.get("contact") === "1";
@@ -121,7 +198,58 @@ export default function MapPage() {
     return raw ? raw.split(",").filter(Boolean) : [];
   }, [searchParams]);
 
-  const hasFilters = !!(yearFrom || yearTo || priceMin || priceMax || popMin || popMax || txnsOnly || noTxns || contactOnly || phoneOnly || selectedCategories.length || selectedBrands.length);
+  // --- Footprint state ---
+  const showFootprints = searchParams.get("fp") === "1";
+  const [footprintData, setFootprintData] = useState<FeatureCollection<Polygon | MultiPolygon>>(EMPTY_FC);
+  const [currentZoom, setCurrentZoom] = useState(6);
+  const footprintFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchFootprints = useCallback((map: MapRef) => {
+    if (!showFootprints) return;
+    const zoom = map.getZoom();
+    if (zoom < FOOTPRINT_ZOOM_THRESHOLD) {
+      setFootprintData(EMPTY_FC);
+      return;
+    }
+    const bounds = map.getBounds();
+    if (!bounds) return;
+    const { _sw, _ne } = bounds as any;
+    const south = _sw.lat;
+    const west = _sw.lng;
+    const north = _ne.lat;
+    const east = _ne.lng;
+    fetch(`/api/footprints/geojson?south=${south}&west=${west}&north=${north}&east=${east}`)
+      .then((r) => r.json())
+      .then((data) => setFootprintData(data))
+      .catch(() => {});
+  }, [showFootprints]);
+
+  // --- Parcel state ---
+  const showParcels = searchParams.get("pcl") === "1";
+  const [parcelData, setParcelData] = useState<FeatureCollection<Polygon | MultiPolygon>>(EMPTY_FC);
+  const parcelFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchParcels = useCallback((map: MapRef) => {
+    if (!showParcels) return;
+    const zoom = map.getZoom();
+    if (zoom < FOOTPRINT_ZOOM_THRESHOLD) {
+      setParcelData(EMPTY_FC);
+      return;
+    }
+    const bounds = map.getBounds();
+    if (!bounds) return;
+    const { _sw, _ne } = bounds as any;
+    const south = _sw.lat;
+    const west = _sw.lng;
+    const north = _ne.lat;
+    const east = _ne.lng;
+    fetch(`/api/parcels/geojson?south=${south}&west=${west}&north=${north}&east=${east}`)
+      .then((r) => r.json())
+      .then((data) => setParcelData(data))
+      .catch(() => {});
+  }, [showParcels]);
+
+  const hasFilters = !!(yearFrom || yearTo || priceMin || priceMax || popMin || popMax || bsMin || bsMax || acMin || acMax || txnsOnly || noTxns || contactOnly || phoneOnly || selectedCategories.length || selectedBrands.length);
   const [filtersOpen, setFiltersOpen] = useState(hasFilters);
 
   const updateParams = useCallback(
@@ -180,6 +308,10 @@ export default function MapPage() {
     const pmax = priceMax ? parseFloat(priceMax) : NaN;
     const popmin = popMin ? parseInt(popMin, 10) : NaN;
     const popmax = popMax ? parseInt(popMax, 10) : NaN;
+    const bsmin = bsMin ? parseFloat(bsMin) : NaN;
+    const bsmax = bsMax ? parseFloat(bsMax) : NaN;
+    const acmin = acMin ? parseFloat(acMin) : NaN;
+    const acmax = acMax ? parseFloat(acMax) : NaN;
 
     return geocoded.filter((p) => {
       if (q && !(p._search_text ?? "").includes(q)) return false;
@@ -205,6 +337,24 @@ export default function MapPage() {
         if (!isNaN(popmax) && pop > popmax) return false;
       }
 
+      if (!isNaN(bsmin) || !isNaN(bsmax)) {
+        const raw = p.building_sf?.replace(/[^0-9.]/g, "");
+        if (!raw) return false;
+        const val = parseFloat(raw);
+        if (isNaN(val)) return false;
+        if (!isNaN(bsmin) && val < bsmin) return false;
+        if (!isNaN(bsmax) && val > bsmax) return false;
+      }
+
+      if (!isNaN(acmin) || !isNaN(acmax)) {
+        const raw = p.site_area?.replace(/[^0-9.]/g, "");
+        if (!raw) return false;
+        const val = parseFloat(raw);
+        if (isNaN(val)) return false;
+        if (!isNaN(acmin) && val < acmin) return false;
+        if (!isNaN(acmax) && val > acmax) return false;
+      }
+
       if ((hasCat || hasBrand) && !p.brands.some(
         (b) =>
           (hasCat && selectedCategories.includes(BRAND_CATEGORY[b])) ||
@@ -218,7 +368,7 @@ export default function MapPage() {
 
       return true;
     });
-  }, [geocoded, searchText, yearFrom, yearTo, priceMin, priceMax, popMin, popMax, selectedCategories, selectedBrands, txnsOnly, noTxns, contactOnly, phoneOnly]);
+  }, [geocoded, searchText, yearFrom, yearTo, priceMin, priceMax, popMin, popMax, bsMin, bsMax, acMin, acMax, selectedCategories, selectedBrands, txnsOnly, noTxns, contactOnly, phoneOnly]);
 
   // Clear popup when the selected property gets filtered out
   useEffect(() => {
@@ -227,13 +377,31 @@ export default function MapPage() {
     }
   }, [filtered, selected]);
 
+  // Fetch footprints when toggle is enabled
+  useEffect(() => {
+    if (showFootprints && mapRef.current) {
+      fetchFootprints(mapRef.current);
+    } else if (!showFootprints) {
+      setFootprintData(EMPTY_FC);
+    }
+  }, [showFootprints, fetchFootprints]);
+
+  // Fetch parcels when toggle is enabled
+  useEffect(() => {
+    if (showParcels && mapRef.current) {
+      fetchParcels(mapRef.current);
+    } else if (!showParcels) {
+      setParcelData(EMPTY_FC);
+    }
+  }, [showParcels, fetchParcels]);
+
   const geojson = useMemo<FeatureCollection>(
     () => ({
       type: "FeatureCollection",
       features: filtered.map((p) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: [p.lng!, p.lat!] },
-        properties: { prop_id: p.prop_id },
+        properties: { prop_id: p.prop_id, pin_status: p.pin_status || "not_started" },
       })),
     }),
     [filtered]
@@ -249,6 +417,8 @@ export default function MapPage() {
     yearFrom || yearTo ? 1 : 0,
     priceMin || priceMax ? 1 : 0,
     popMin || popMax ? 1 : 0,
+    bsMin || bsMax ? 1 : 0,
+    acMin || acMax ? 1 : 0,
     txnsOnly || noTxns ? 1 : 0,
     contactOnly ? 1 : 0,
     phoneOnly ? 1 : 0,
@@ -424,6 +594,48 @@ export default function MapPage() {
               />
             </div>
 
+            {/* Building SF range */}
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Bldg SF</span>
+              <Input
+                type="number"
+                placeholder="Min"
+                value={bsMin}
+                onChange={(e) => updateParams({ bsmin: e.target.value || null })}
+                className="px-2 py-1 w-24 h-7 text-sm"
+              />
+              <span className="text-muted-foreground text-xs">to</span>
+              <Input
+                type="number"
+                placeholder="Max"
+                value={bsMax}
+                onChange={(e) => updateParams({ bsmax: e.target.value || null })}
+                className="px-2 py-1 w-24 h-7 text-sm"
+              />
+            </div>
+
+            {/* Acreage range */}
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Acres</span>
+              <Input
+                type="number"
+                step="0.01"
+                placeholder="Min"
+                value={acMin}
+                onChange={(e) => updateParams({ acmin: e.target.value || null })}
+                className="px-2 py-1 w-20 h-7 text-sm"
+              />
+              <span className="text-muted-foreground text-xs">to</span>
+              <Input
+                type="number"
+                step="0.01"
+                placeholder="Max"
+                value={acMax}
+                onChange={(e) => updateParams({ acmax: e.target.value || null })}
+                className="px-2 py-1 w-20 h-7 text-sm"
+              />
+            </div>
+
             {/* Brand selects */}
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Brand</span>
@@ -471,11 +683,31 @@ export default function MapPage() {
                 />
                 Has phone
               </label>
+              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
+                <Checkbox
+                  checked={showFootprints}
+                  onCheckedChange={(checked) => updateParams({ fp: checked ? "1" : null })}
+                />
+                Building footprints
+                {showFootprints && currentZoom < FOOTPRINT_ZOOM_THRESHOLD && (
+                  <span className="text-[10px] text-muted-foreground">(zoom in)</span>
+                )}
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
+                <Checkbox
+                  checked={showParcels}
+                  onCheckedChange={(checked) => updateParams({ pcl: checked ? "1" : null })}
+                />
+                Parcel boundaries
+                {showParcels && currentZoom < FOOTPRINT_ZOOM_THRESHOLD && (
+                  <span className="text-[10px] text-muted-foreground">(zoom in)</span>
+                )}
+              </label>
               {hasFilters && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => updateParams({ yf: null, yt: null, pmin: null, pmax: null, popmin: null, popmax: null, txns: null, notxns: null, contact: null, phone: null, cat: null, brands: null })}
+                  onClick={() => updateParams({ yf: null, yt: null, pmin: null, pmax: null, popmin: null, popmax: null, bsmin: null, bsmax: null, acmin: null, acmax: null, txns: null, notxns: null, contact: null, phone: null, cat: null, brands: null })}
                   className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground h-auto px-1 py-0.5"
                 >
                   <X size={12} />
@@ -501,6 +733,16 @@ export default function MapPage() {
         onMoveEnd={(e) => {
           const { latitude, longitude, zoom, bearing, pitch } = e.viewState;
           sessionStorage.setItem(MAP_VIEW_KEY, JSON.stringify({ latitude, longitude, zoom, bearing, pitch }));
+          setCurrentZoom(zoom);
+          // Debounced footprint + parcel fetch
+          if (footprintFetchTimer.current) clearTimeout(footprintFetchTimer.current);
+          footprintFetchTimer.current = setTimeout(() => {
+            if (mapRef.current) fetchFootprints(mapRef.current);
+          }, 300);
+          if (parcelFetchTimer.current) clearTimeout(parcelFetchTimer.current);
+          parcelFetchTimer.current = setTimeout(() => {
+            if (mapRef.current) fetchParcels(mapRef.current);
+          }, 300);
         }}
         interactiveLayerIds={["clusters", "unclustered-point"]}
         cursor="pointer"
@@ -510,13 +752,27 @@ export default function MapPage() {
           type="geojson"
           data={geojson}
           cluster={true}
-          clusterMaxZoom={14}
-          clusterRadius={50}
+          clusterMaxZoom={11}
+          clusterRadius={35}
         >
           <Layer {...clusterLayer} />
           <Layer {...clusterCountLayer} />
           <Layer {...unclusteredPointLayer} />
         </Source>
+
+        {showFootprints && (
+          <Source id="footprints" type="geojson" data={footprintData}>
+            <Layer {...footprintFillLayer} />
+            <Layer {...footprintLineLayer} />
+          </Source>
+        )}
+
+        {showParcels && (
+          <Source id="parcels" type="geojson" data={parcelData}>
+            <Layer {...parcelFillLayer} />
+            <Layer {...parcelLineLayer} />
+          </Source>
+        )}
 
         {selected && (
           <Popup
@@ -535,6 +791,32 @@ export default function MapPage() {
           </Popup>
         )}
       </MapGL>
+
+      {/* Legend */}
+      <div className="absolute bottom-4 right-4 z-10 bg-background/95 backdrop-blur rounded-lg shadow-lg px-3 py-2">
+        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Pipeline</p>
+        <div className="space-y-1">
+          {([
+            ["#bcbbb5", "Not Started"],
+            ["#5eb1ef", "Attempted Contact"],
+            ["#3db9cf", "Interested"],
+            ["#53b9ab", "Listed / Active Deal"],
+            ["#56ba9f", "In Negotiation"],
+            ["#65ba74", "Under Contract"],
+            ["#8db654", "Closed / Won"],
+            ["#9b9ef0", "Lost / Cancelled"],
+            ["#ec8e7b", "Do Not Contact"],
+          ] as const).map(([color, label]) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <span
+                className="inline-block w-3 h-3 rounded-full border border-white shadow-sm flex-none"
+                style={{ backgroundColor: color }}
+              />
+              <span className="text-[10px] text-foreground leading-none">{label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

@@ -22,7 +22,7 @@ def run_all_checks() -> Tuple[Dict[str, List[str]], Dict[str, int]]:
         - flags_by_rt: {"RT196880": ["H003"], "RT43746": [], ...}
         - summary: {"H001": 0, "H002": 0, "H003": 83, ...}
     """
-    html_files = sorted(HTML_DIR.glob("*.html"))
+    html_files = sorted(HTML_DIR.rglob("*.html"))
     total = len(html_files)
     logger.info("Scanning %d HTML files...", total)
 

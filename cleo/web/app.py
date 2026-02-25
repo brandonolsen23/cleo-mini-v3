@@ -12,13 +12,18 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR
+from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH
+from cleo.ingest.html_index import HtmlIndex
 from cleo.parse.versioning import active_dir, active_version, sandbox_path, sandbox_exists, list_versions, VOLATILE_FIELDS
 from cleo.extract import versioning as extract_ver
 from cleo.web.crm import router as crm_router
+from cleo.web.operators import router as operators_router
+from cleo.web.outreach import router as outreach_router
 
 app = FastAPI(title="Cleo Review")
 app.include_router(crm_router)
+app.include_router(operators_router)
+app.include_router(outreach_router)
 
 STATIC_DIR = Path(__file__).parent / "static"
 REVIEWS_PATH = DATA_DIR / "reviews.json"
@@ -39,6 +44,21 @@ def index():
 def pipeline():
     from fastapi.responses import HTMLResponse as HR
     content = (STATIC_DIR / "pipeline.html").read_text(encoding="utf-8")
+    return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/party-review", response_class=HTMLResponse)
+def party_review():
+    from fastapi.responses import HTMLResponse as HR
+    content = (STATIC_DIR / "party_review.html").read_text(encoding="utf-8")
+    return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/api/party-review-page", response_class=HTMLResponse)
+def party_review_page():
+    """Alias under /api/ so the React app can link here without Vite intercepting."""
+    from fastapi.responses import HTMLResponse as HR
+    content = (STATIC_DIR / "party_review.html").read_text(encoding="utf-8")
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -150,6 +170,52 @@ def _brands_for_prop(prop_id: str) -> list[str]:
     matches = _get_brand_matches()
     entries = matches.get(prop_id, [])
     return sorted(set(e["brand"] for e in entries))
+
+
+def _operators_for_prop(prop_id: str) -> list[dict]:
+    """Return linked operators for a property (confirmed matches)."""
+    if not OPERATORS_REGISTRY_PATH.exists():
+        return []
+    try:
+        from cleo.operators.registry import load_registry as load_op_reg
+        reg = load_op_reg()
+        result = []
+        for op_id, op in reg.get("operators", {}).items():
+            for m in op.get("property_matches", []):
+                if m.get("prop_id") == prop_id and m.get("status") == "confirmed":
+                    result.append({
+                        "op_id": op_id,
+                        "name": op.get("name", ""),
+                        "slug": op.get("slug", ""),
+                        "url": op.get("url", ""),
+                    })
+                    break
+        return result
+    except Exception:
+        return []
+
+
+def _operators_for_party(group_id: str) -> list[dict]:
+    """Return linked operators for a party group (confirmed matches)."""
+    if not OPERATORS_REGISTRY_PATH.exists():
+        return []
+    try:
+        from cleo.operators.registry import load_registry as load_op_reg
+        reg = load_op_reg()
+        result = []
+        for op_id, op in reg.get("operators", {}).items():
+            for m in op.get("party_matches", []):
+                if m.get("group_id") == group_id and m.get("status") == "confirmed":
+                    result.append({
+                        "op_id": op_id,
+                        "name": op.get("name", ""),
+                        "slug": op.get("slug", ""),
+                        "url": op.get("url", ""),
+                    })
+                    break
+        return result
+    except Exception:
+        return []
 
 
 def _build_rt_to_brands(properties: dict) -> dict[str, list[str]]:
@@ -332,6 +398,62 @@ def _calculate_ppsf(sale_price: str, building_sf: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Party name -> group_id reverse index (cached)
+# ---------------------------------------------------------------------------
+
+_name_to_gid_cache: dict[str, str] | None = None
+_name_to_gid_mtime: float = 0.0
+
+
+def _get_name_to_gid() -> dict[str, str]:
+    """Return a cached name -> group_id reverse index from the party registry."""
+    global _name_to_gid_cache, _name_to_gid_mtime
+
+    if not PARTIES_PATH.exists():
+        return {}
+
+    mtime = PARTIES_PATH.stat().st_mtime
+    if _name_to_gid_cache is not None and _name_to_gid_mtime == mtime:
+        return _name_to_gid_cache
+
+    from cleo.parties.registry import load_registry as load_party_registry
+    reg = load_party_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+
+    idx: dict[str, str] = {}
+    for gid, p in parties_data.items():
+        for name in p.get("normalized_names", []):
+            idx[name] = gid
+        for name in p.get("names", []):
+            idx[name.upper().strip()] = gid
+    _name_to_gid_cache = idx
+    _name_to_gid_mtime = mtime
+    return idx
+
+
+def _lookup_group_id(party_name: str) -> str | None:
+    """Look up the party group_id for a given name string."""
+    if not party_name:
+        return None
+    idx = _get_name_to_gid()
+    # Try uppercase match (matches the raw names index)
+    gid = idx.get(party_name.upper().strip())
+    if gid:
+        return gid
+    # Try normalized match
+    from cleo.parties.normalize import normalize_name
+    return idx.get(normalize_name(party_name))
+
+
+def _make_contact_id(contact_name: str) -> str | None:
+    """Return normalized contact_id for a contact person name, or None."""
+    if not contact_name or not contact_name.strip():
+        return None
+    from cleo.parties.normalize import normalize_contact
+    return normalize_contact(contact_name)
+
+
+# ---------------------------------------------------------------------------
 # Transactions (front-facing app)
 # ---------------------------------------------------------------------------
 
@@ -380,7 +502,10 @@ def api_transactions():
             "sale_date_iso": tx.get("sale_date_iso", ""),
             "seller": data.get("transferor", {}).get("name", ""),
             "buyer": data.get("transferee", {}).get("name", ""),
+            "seller_group_id": _lookup_group_id(data.get("transferor", {}).get("name", "")),
+            "buyer_group_id": _lookup_group_id(data.get("transferee", {}).get("name", "")),
             "building_sf": data.get("export_extras", {}).get("building_sf", ""),
+            "site_area": data.get("site", {}).get("site_area", ""),
             "ppsf": _calculate_ppsf(tx.get("sale_price", ""), data.get("export_extras", {}).get("building_sf", "")),
             "has_photos": bool(data.get("photos")),
             "brands": rt_brands.get(rt_id, []),
@@ -748,6 +873,61 @@ def _get_gw_active_dir():
 _properties_cache: list | None = None
 _properties_cache_mtime: float = 0
 
+_DEAL_STAGE_PRIORITY = {
+    "active_deal": 0,
+    "in_negotiation": 1,
+    "under_contract": 2,
+    # legacy stages treated as active
+    "qualifying": 0,
+    "negotiating": 1,
+    "lead": 0,
+    "contacted": 0,
+}
+_DEAL_CLOSED_STAGES = {"closed_won", "lost_cancelled", "closed_lost"}
+
+
+def _build_prop_deal_stage_lookup() -> dict[str, str]:
+    """Scan deals and return {prop_id: best_deal_stage}.
+
+    Priority: active (non-closed) deals first (by pipeline order),
+    then closed deals.
+    """
+    if not CRM_DEALS_PATH.exists():
+        return {}
+    deals = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8")).get("deals", {})
+    result: dict[str, str] = {}
+    for _did, d in deals.items():
+        pid = d.get("prop_id", "")
+        stage = d.get("stage", "")
+        if not pid or not stage:
+            continue
+        existing = result.get(pid)
+        if existing is None:
+            result[pid] = stage
+            continue
+        # Active beats closed
+        existing_closed = existing in _DEAL_CLOSED_STAGES
+        new_closed = stage in _DEAL_CLOSED_STAGES
+        if existing_closed and not new_closed:
+            result[pid] = stage
+        elif not existing_closed and not new_closed:
+            # Both active — prefer higher priority (lower number)
+            if _DEAL_STAGE_PRIORITY.get(stage, 99) < _DEAL_STAGE_PRIORITY.get(existing, 99):
+                result[pid] = stage
+    return result
+
+
+def _derive_pin_status(pipeline_status: str, deal_stage: str | None) -> str:
+    """Derive the single pin_status for map coloring.
+
+    Priority: do_not_contact > active deal stage > closed deal > pipeline_status
+    """
+    if pipeline_status == "do_not_contact":
+        return "do_not_contact"
+    if deal_stage:
+        return deal_stage
+    return pipeline_status or "not_started"
+
 
 @app.get("/api/properties")
 def api_properties():
@@ -789,6 +969,9 @@ def api_properties():
                 "buyer_phone": data.get("transferee", {}).get("phone", ""),
                 "search_text": _build_record_search_text(data),
             }
+
+    # Build deal stage lookup for pin coloring
+    prop_deal_stages = _build_prop_deal_stage_lookup()
 
     records = []
     for pid, prop in props.items():
@@ -832,6 +1015,10 @@ def api_properties():
             search_parts.append(rt_id)
         prop_search_text = " ".join(p for p in search_parts if p).lower()
 
+        pipeline_status = prop.get("pipeline_status", "not_started")
+        deal_stage = prop_deal_stages.get(pid)
+        pin_status = _derive_pin_status(pipeline_status, deal_stage)
+
         records.append({
             "prop_id": pid,
             "address": prop.get("address", ""),
@@ -856,7 +1043,11 @@ def api_properties():
             "has_contact": bool(owner_contact),
             "has_phone": bool(owner_phone),
             "brands": _brands_for_prop(pid),
+            "building_sf": prop.get("building_sf", ""),
+            "site_area": prop.get("site_area", ""),
             "has_gw_data": bool(prop.get("gw_ids")),
+            "pipeline_status": pipeline_status,
+            "pin_status": pin_status,
             "_search_text": prop_search_text,
         })
 
@@ -898,7 +1089,10 @@ def api_property_detail(prop_id: str):
                 "sale_date_iso": tx.get("sale_date_iso", ""),
                 "seller": data.get("transferor", {}).get("name", ""),
                 "buyer": data.get("transferee", {}).get("name", ""),
+                "seller_group_id": _lookup_group_id(data.get("transferor", {}).get("name", "")),
+                "buyer_group_id": _lookup_group_id(data.get("transferee", {}).get("name", "")),
                 "buyer_contact": data.get("transferee", {}).get("contact", ""),
+                "buyer_contact_id": _make_contact_id(data.get("transferee", {}).get("contact", "")),
                 "buyer_phone": data.get("transferee", {}).get("phone", ""),
                 "building_sf": bsf,
                 "ppsf": _calculate_ppsf(tx.get("sale_price", ""), bsf),
@@ -918,12 +1112,322 @@ def api_property_detail(prop_id: str):
                 if gw_path.exists():
                     gw_records.append(json.loads(gw_path.read_text(encoding="utf-8")))
 
+    # Load linked operators
+    linked_operators = _operators_for_prop(prop_id)
+
     return {
         **prop,
         "prop_id": prop_id,
         "transactions": transactions,
         "brands": _brands_for_prop(prop_id),
         "gw_records": gw_records,
+        "linked_operators": linked_operators,
+    }
+
+
+def _log_property_edit(entry: dict) -> None:
+    """Append an edit entry to the property edits JSONL audit log."""
+    entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
+    with open(PROPERTY_EDITS_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+@app.patch("/api/properties/{prop_id}")
+async def api_update_property(prop_id: str, request: Request):
+    """Update address/location fields on a property.
+
+    Body: any subset of {address, city, municipality, province, postal_code, lat, lng}
+    """
+    global _properties_cache, _properties_cache_mtime
+
+    if not PROPERTIES_PATH.exists():
+        raise HTTPException(404, "Property registry not built. Run: cleo properties")
+
+    from cleo.properties.registry import load_registry, save_registry
+
+    body = await request.json()
+    allowed = {"address", "city", "municipality", "province", "postal_code", "lat", "lng"}
+    changes = {k: v for k, v in body.items() if k in allowed}
+
+    if not changes:
+        raise HTTPException(400, "No valid fields provided")
+
+    reg = load_registry(PROPERTIES_PATH)
+    props = reg.get("properties", {})
+
+    if prop_id not in props:
+        raise HTTPException(404, f"Property not found: {prop_id}")
+
+    prop = props[prop_id]
+
+    # Apply changes
+    for k, v in changes.items():
+        prop[k] = v
+    prop["updated"] = datetime.now().strftime("%Y-%m-%d")
+
+    # If lat+lng+address provided, also update geocode cache so coords survive rebuilds
+    if "lat" in changes and "lng" in changes and prop.get("address"):
+        from cleo.geocode.cache import GeocodeCache
+
+        cache = GeocodeCache(GEOCODE_CACHE_PATH)
+        addr_key = f"{prop['address']}, {prop.get('city', '')}, {prop.get('province', 'Ontario')}"
+        cache.put(addr_key, {
+            "lat": changes["lat"],
+            "lng": changes["lng"],
+            "formatted_address": addr_key,
+            "accuracy": "manual",
+            "failed": False,
+        })
+        cache.save()
+
+    save_registry(reg, PROPERTIES_PATH)
+    _properties_cache = None
+    _properties_cache_mtime = 0
+
+    _log_property_edit({
+        "action": "update_property",
+        "prop_id": prop_id,
+        "changes": changes,
+    })
+
+    return {"status": "saved", "prop_id": prop_id}
+
+
+_VALID_PIPELINE_STATUSES = {
+    "not_started", "attempted_contact", "interested", "listed", "do_not_contact",
+}
+
+
+@app.put("/api/properties/{prop_id}/pipeline-status")
+async def api_set_pipeline_status(prop_id: str, request: Request):
+    """Set pipeline_status on a property record."""
+    global _properties_cache, _properties_cache_mtime
+
+    body = await request.json()
+    new_status = body.get("status", "").strip()
+    if new_status not in _VALID_PIPELINE_STATUSES:
+        raise HTTPException(400, f"Invalid pipeline status: {new_status}")
+
+    if not PROPERTIES_PATH.exists():
+        raise HTTPException(404, "Property registry not built. Run: cleo properties")
+
+    from cleo.properties.registry import load_registry, save_registry
+
+    reg = load_registry(PROPERTIES_PATH)
+    props = reg.get("properties", {})
+
+    if prop_id not in props:
+        raise HTTPException(404, f"Property not found: {prop_id}")
+
+    props[prop_id]["pipeline_status"] = new_status
+    props[prop_id]["updated"] = datetime.now().strftime("%Y-%m-%d")
+    save_registry(reg, PROPERTIES_PATH)
+    _properties_cache = None
+    _properties_cache_mtime = 0
+
+    _log_property_edit({
+        "action": "set_pipeline_status",
+        "prop_id": prop_id,
+        "status": new_status,
+    })
+
+    return {"ok": True, "prop_id": prop_id, "pipeline_status": new_status}
+
+
+# ---------------------------------------------------------------------------
+# Google Places & Street View (front-facing app)
+# ---------------------------------------------------------------------------
+
+from cleo.config import GOOGLE_PLACES_PATH, STREETVIEW_DIR, STREETVIEW_META_PATH, GOOGLE_BUDGET_PATH  # noqa: E402
+
+
+@app.get("/api/properties/{prop_id}/streetview")
+def api_property_streetview(prop_id: str):
+    """Serve Street View image, fetching on-demand if not cached.
+
+    1. Check local cache → serve immediately if exists
+    2. If no cache: look up property coords, check metadata (free),
+       fetch image through BudgetGuardian, cache it, serve it
+    3. Returns 404 if no coverage or budget exhausted
+    """
+    image_path = STREETVIEW_DIR / f"{prop_id}.jpg"
+
+    # Serve from cache if available
+    if image_path.exists():
+        return FileResponse(image_path, media_type="image/jpeg")
+
+    # On-demand fetch
+    from cleo.config import GOOGLE_API_KEY, PROPERTIES_PATH
+    if not GOOGLE_API_KEY:
+        raise HTTPException(404, "Street View not configured")
+
+    # Look up property coordinates
+    from cleo.properties.registry import load_registry
+    reg = load_registry(PROPERTIES_PATH)
+    prop = reg.get("properties", {}).get(prop_id)
+    if not prop or prop.get("lat") is None or prop.get("lng") is None:
+        raise HTTPException(404, "Property has no coordinates")
+
+    lat = prop["lat"]
+    lng = prop["lng"]
+
+    from cleo.google.budget import BudgetGuardian
+    from cleo.google.streetview import StreetViewClient
+    from cleo.google.store import StreetViewMetaStore
+
+    budget = BudgetGuardian()
+    sv_meta = StreetViewMetaStore()
+
+    try:
+        client = StreetViewClient(GOOGLE_API_KEY, budget)
+
+        # Check metadata (free) if not already checked
+        if not sv_meta.has_metadata(prop_id):
+            meta = client.check_metadata(lat, lng)
+            sv_meta.set_metadata(prop_id, meta)
+            sv_meta.save()
+            if not meta["has_coverage"]:
+                client.close()
+                raise HTTPException(404, "No Street View coverage")
+        elif not sv_meta.has_coverage(prop_id):
+            client.close()
+            raise HTTPException(404, "No Street View coverage")
+
+        # Check budget before fetching image
+        if not budget.can_use("streetview_image"):
+            client.close()
+            raise HTTPException(429, "Street View daily/monthly budget exhausted")
+
+        # Fetch and cache the image
+        path = client.fetch_image(lat, lng, prop_id)
+        client.close()
+
+        if path and path.exists():
+            sv_meta.set_image_fetched(prop_id)
+            sv_meta.save()
+            return FileResponse(path, media_type="image/jpeg")
+
+        raise HTTPException(404, "Street View image unavailable")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Street View fetch failed for %s: %s", prop_id, e)
+        raise HTTPException(500, "Street View fetch failed")
+
+
+@app.get("/api/properties/{prop_id}/places")
+def api_property_places(prop_id: str):
+    """Return cached Google Places data for a property. Never calls Google API."""
+    if not GOOGLE_PLACES_PATH.exists():
+        raise HTTPException(404, "Google Places data not yet collected")
+
+    import json as _json
+    data = _json.loads(GOOGLE_PLACES_PATH.read_text(encoding="utf-8"))
+    entry = data.get("properties", {}).get(prop_id)
+    if not entry:
+        raise HTTPException(404, "No Places data for this property")
+
+    # Also include street view metadata if available
+    sv_meta = None
+    if STREETVIEW_META_PATH.exists():
+        sv_data = _json.loads(STREETVIEW_META_PATH.read_text(encoding="utf-8"))
+        sv_meta = sv_data.get("properties", {}).get(prop_id)
+
+    return {
+        **entry,
+        "prop_id": prop_id,
+        "streetview": sv_meta,
+        "has_streetview_image": (STREETVIEW_DIR / f"{prop_id}.jpg").exists(),
+    }
+
+
+@app.get("/api/google/status")
+def api_google_status():
+    """Return Google API budget usage and enrichment progress (admin)."""
+    result = {}
+
+    # Budget
+    if GOOGLE_BUDGET_PATH.exists():
+        import json as _json
+        budget_data = _json.loads(GOOGLE_BUDGET_PATH.read_text(encoding="utf-8"))
+        result["budget"] = budget_data
+    else:
+        result["budget"] = None
+
+    # Places enrichment stats
+    if GOOGLE_PLACES_PATH.exists():
+        import json as _json
+        places_data = _json.loads(GOOGLE_PLACES_PATH.read_text(encoding="utf-8"))
+        props = places_data.get("properties", {})
+        result["places"] = {
+            "total": len(props),
+            "with_place_id": sum(1 for p in props.values() if "place_id" in p),
+            "with_essentials": sum(1 for p in props.values() if "essentials" in p),
+            "with_pro": sum(1 for p in props.values() if "pro" in p),
+            "with_enterprise": sum(1 for p in props.values() if "enterprise" in p),
+        }
+    else:
+        result["places"] = None
+
+    # Street view stats
+    if STREETVIEW_META_PATH.exists():
+        import json as _json
+        sv_data = _json.loads(STREETVIEW_META_PATH.read_text(encoding="utf-8"))
+        sv_props = sv_data.get("properties", {})
+        result["streetview"] = {
+            "total_checked": len(sv_props),
+            "with_coverage": sum(1 for p in sv_props.values() if p.get("has_coverage")),
+            "images_fetched": sum(1 for p in sv_props.values() if p.get("image_fetched")),
+        }
+    else:
+        result["streetview"] = None
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# OSM Tenants (front-facing app)
+# ---------------------------------------------------------------------------
+
+from cleo.osm.store import OSM_TENANTS_PATH  # noqa: E402
+from cleo.osm.brand_search import OSM_BRANDS_PATH  # noqa: E402
+
+
+@app.get("/api/properties/{prop_id}/tenants")
+def api_property_tenants(prop_id: str):
+    """Return OSM tenant + brand data for a property. Merges proximity and brand search."""
+    import json as _json
+    confirmed: list[dict] = []
+
+    # Proximity-based tenant data (only confirmed via address match)
+    if OSM_TENANTS_PATH.exists():
+        data = _json.loads(OSM_TENANTS_PATH.read_text(encoding="utf-8"))
+        entry = data.get("properties", {}).get(prop_id)
+        if entry:
+            for t in entry.get("tenants", []):
+                if t.get("match_type") == "confirmed":
+                    confirmed.append(t)
+
+    # Brand search data (only confirmed via address match)
+    if OSM_BRANDS_PATH.exists():
+        brand_data = _json.loads(OSM_BRANDS_PATH.read_text(encoding="utf-8"))
+        brand_entry = brand_data.get("properties", {}).get(prop_id)
+        if brand_entry:
+            seen = {t["osm_id"] for t in confirmed}
+            for t in brand_entry.get("confirmed", []):
+                if t["osm_id"] not in seen:
+                    confirmed.append(t)
+                    seen.add(t["osm_id"])
+
+    if not confirmed:
+        raise HTTPException(404, "No tenant data for this property")
+
+    return {
+        "prop_id": prop_id,
+        "confirmed": confirmed,
+        "confirmed_count": len(confirmed),
     }
 
 
@@ -1107,6 +1611,7 @@ def api_party_detail(group_id: str):
         "updated": p.get("updated", ""),
         "linked_properties": linked_properties,
         "confirmed_names": confirmed,
+        "linked_operators": _operators_for_party(group_id),
     }
 
 
@@ -1325,6 +1830,147 @@ async def api_party_disconnect(group_id: str, request: Request):
     return {"status": "disconnected", "source_group": group_id, "target_group": tgt_gid, "name": name}
 
 
+@app.post("/api/parties/{group_id}/split-cluster")
+async def api_party_split_cluster(group_id: str, request: Request):
+    """Split multiple names from a party group into a new group together.
+
+    Body: {
+        "names": ["Name A", "Name B"],
+        "reason": "These belong together but not in this group"
+    }
+    """
+    global _parties_cache
+    if not PARTIES_PATH.exists():
+        raise HTTPException(404, "Party registry not built. Run: cleo parties")
+
+    from cleo.parties.registry import load_registry, save_registry, _is_company_name
+    from cleo.parties.normalize import normalize_name, make_alias
+
+    body = await request.json()
+    names = body.get("names") or []
+    reason = (body.get("reason") or "").strip()
+
+    if not names or len(names) < 2:
+        raise HTTPException(400, "At least 2 names are required")
+
+    reg = load_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+
+    if group_id not in parties_data:
+        raise HTTPException(404, f"Party group not found: {group_id}")
+
+    source = parties_data[group_id]
+    norm_names = {normalize_name(n) for n in names}
+
+    # Collect matching appearances for ALL names
+    matching = [a for a in source["appearances"] if normalize_name(a["name"]) in norm_names]
+    if not matching:
+        raise HTTPException(400, "None of the specified names found in group")
+
+    remaining = [a for a in source["appearances"] if normalize_name(a["name"]) not in norm_names]
+    if not remaining:
+        raise HTTPException(400, "Cannot split all names out of a group — at least one must remain")
+
+    # Create new group ID
+    max_num = 0
+    for gid in parties_data:
+        if gid.startswith("G") and gid[1:].isdigit():
+            max_num = max(max_num, int(gid[1:]))
+    tgt_gid = f"G{max_num + 1:05d}"
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Update source group — remove matched appearances
+    source["appearances"] = remaining
+    source["names"] = sorted(set(a["name"] for a in remaining))
+    source["normalized_names"] = sorted(set(normalize_name(a["name"]) for a in remaining))
+    source["rt_ids"] = sorted(set(a["rt_id"] for a in remaining))
+    source["transaction_count"] = len(source["rt_ids"])
+    source["buy_count"] = sum(1 for a in remaining if a["role"] == "buyer")
+    source["sell_count"] = sum(1 for a in remaining if a["role"] == "seller")
+    dates = [a["sale_date_iso"] for a in remaining if a.get("sale_date_iso")]
+    source["first_active_iso"] = min(dates) if dates else ""
+    source["last_active_iso"] = max(dates) if dates else ""
+    source["addresses"] = sorted(set(a.get("address", "") or "" for a in remaining if (a.get("address") or "").strip()))
+    source["contacts"] = sorted(set(a.get("contact", "") or "" for a in remaining if (a.get("contact") or "").strip()))
+    seen_phones: set[str] = set()
+    new_phones: list[str] = []
+    for a in remaining:
+        for p in a.get("phones", []):
+            if p and p not in seen_phones:
+                new_phones.append(p)
+                seen_phones.add(p)
+    source["phones"] = new_phones
+    source["updated"] = today
+
+    # Create new group with all matched appearances
+    tgt_names = sorted(set(a["name"] for a in matching))
+    is_company = any(_is_company_name(n) for n in tgt_names)
+    aliases = sorted(set(
+        alias for a in matching for alias in a.get("aliases", [])
+    ))
+    for n in tgt_names:
+        alias = make_alias(n)
+        if alias and alias.upper() not in {a.upper() for a in aliases}:
+            aliases.append(alias)
+    aliases = sorted(set(aliases))
+
+    parties_data[tgt_gid] = {
+        "display_name": max(set(a["name"] for a in matching), key=lambda n: sum(1 for a in matching if a["name"] == n)),
+        "display_name_override": "",
+        "is_company": is_company,
+        "names": tgt_names,
+        "normalized_names": sorted(set(normalize_name(a["name"]) for a in matching)),
+        "addresses": sorted(set(a.get("address", "") for a in matching if (a.get("address") or "").strip())),
+        "contacts": sorted(set(a.get("contact", "") for a in matching if (a.get("contact") or "").strip())),
+        "phones": list(dict.fromkeys(p for a in matching for p in a.get("phones", []) if p)),
+        "aliases": aliases,
+        "appearances": sorted(matching, key=lambda x: x.get("sale_date_iso", ""), reverse=True),
+        "transaction_count": len(set(a["rt_id"] for a in matching)),
+        "buy_count": sum(1 for a in matching if a["role"] == "buyer"),
+        "sell_count": sum(1 for a in matching if a["role"] == "seller"),
+        "first_active_iso": min((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
+        "last_active_iso": max((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
+        "rt_ids": sorted(set(a["rt_id"] for a in matching)),
+        "created": today,
+        "updated": today,
+    }
+
+    # Store split overrides for each name (rebuild persistence)
+    overrides = reg.setdefault("overrides", {})
+    splits = overrides.setdefault("splits", [])
+    for nn in norm_names:
+        splits.append({
+            "source": group_id,
+            "normalized_name": nn,
+            "target": tgt_gid,
+            "reason": reason or "Split cluster via party review",
+            "date": today,
+        })
+
+    # Sort parties by ID
+    reg["parties"] = dict(sorted(parties_data.items()))
+    save_registry(reg, PARTIES_PATH)
+    _parties_cache = None
+
+    # Audit log
+    _log_party_edit({
+        "action": "split_cluster",
+        "source_group": group_id,
+        "names": list(names),
+        "normalized_names": list(norm_names),
+        "target_group": tgt_gid,
+        "reason": reason,
+    })
+
+    return {
+        "status": "split_cluster",
+        "source_group": group_id,
+        "target_group": tgt_gid,
+        "names": list(names),
+    }
+
+
 @app.post("/api/parties/{group_id}/confirm")
 async def api_party_confirm(group_id: str, request: Request):
     """Confirm a name belongs in a party group.
@@ -1428,6 +2074,137 @@ def api_grouping_reason(group_id: str, name: str = ""):
         raise HTTPException(404, "No active parse version")
 
     return get_grouping_reason(group_id, name.strip(), parties_data, act)
+
+
+@app.get("/api/party-review/chain/{group_id}")
+def api_party_review_chain(group_id: str, name: str = ""):
+    """Return chain link data with full RT records for the chain viewer.
+
+    Builds a 2-3 step chain showing exactly how a name is linked to the group,
+    with full parsed transaction data for each chain step.
+    """
+    if not PARTIES_PATH.exists():
+        raise HTTPException(404, "Party registry not built. Run: cleo parties")
+    if not name.strip():
+        raise HTTPException(400, "name query parameter is required")
+
+    from cleo.parties.registry import load_registry
+    from cleo.parties.suggestions import get_grouping_reason
+
+    reg = load_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+
+    if group_id not in parties_data:
+        raise HTTPException(404, f"Party group not found: {group_id}")
+
+    act = active_dir()
+    if act is None:
+        raise HTTPException(404, "No active parse version")
+
+    reasons = get_grouping_reason(group_id, name.strip(), parties_data, act)
+
+    # Build chain from reasons
+    chain = []
+    direct_reasons = []
+
+    if reasons and reasons[0].get("type") == "chain" and reasons[0].get("chain"):
+        # Transitive chain — use structured chain data
+        chain = reasons[0]["chain"][:3]  # Cap at 3 steps
+    elif reasons:
+        # Direct link — build 2-step chain from the best reason
+        direct_reasons = reasons
+        # Pick the first reason that has linked names (skip alias-only matches)
+        r = None
+        for candidate in reasons:
+            if candidate.get("linked_rt_data"):
+                r = candidate
+                break
+        if r is None:
+            r = reasons[0]
+
+        chain.append({
+            "name": name.strip(),
+            "rt_id": r.get("target_rt_id"),
+            "role": r.get("target_role"),
+            "link_type": r.get("type"),
+            "link_value": r.get("value"),
+        })
+        # Add first linked name as step 2
+        linked = r.get("linked_rt_data", [])
+        if linked:
+            ld = linked[0]
+            chain.append({
+                "name": ld["name"],
+                "rt_id": ld.get("rt_id"),
+                "role": ld.get("role"),
+                "link_type": None,
+                "link_value": None,
+            })
+    else:
+        # No reasons found — fallback: show review name and anchor with normalization banner
+        p = parties_data[group_id]
+        group_names = p.get("names", [])
+        # Pick anchor (name with most appearances)
+        apps = p.get("appearances", [])
+        name_counts: dict[str, int] = {}
+        for a in apps:
+            name_counts[a["name"]] = name_counts.get(a["name"], 0) + 1
+        anchor = max(group_names, key=lambda n: name_counts.get(n, 0)) if group_names else None
+
+        # Find any RT for the review name
+        review_rt = None
+        review_role = None
+        for a in apps:
+            if a["name"] == name.strip():
+                review_rt = a["rt_id"]
+                review_role = a["role"]
+                break
+        chain.append({
+            "name": name.strip(),
+            "rt_id": review_rt,
+            "role": review_role,
+            "link_type": "normalization",
+            "link_value": "Same normalized name",
+        })
+        if anchor and anchor != name.strip():
+            anchor_rt = None
+            anchor_role = None
+            for a in apps:
+                if a["name"] == anchor:
+                    anchor_rt = a["rt_id"]
+                    anchor_role = a["role"]
+                    break
+            chain.append({
+                "name": anchor,
+                "rt_id": anchor_rt,
+                "role": anchor_role,
+                "link_type": None,
+                "link_value": None,
+            })
+
+    # Load full RT data for each chain step
+    for step in chain:
+        rt_id = step.get("rt_id")
+        if rt_id:
+            rt_file = act / f"{rt_id}.json"
+            if rt_file.exists():
+                data = json.loads(rt_file.read_text(encoding="utf-8"))
+                step["rt_data"] = {
+                    "transaction": data.get("transaction", {}),
+                    "transferor": data.get("transferor", {}),
+                    "transferee": data.get("transferee", {}),
+                    "site": data.get("site", {}),
+                    "consideration": data.get("consideration", {}),
+                    "description": data.get("description", ""),
+                    "photos": data.get("photos", []),
+                    "export_extras": data.get("export_extras", {}),
+                }
+            else:
+                step["rt_data"] = None
+        else:
+            step["rt_data"] = None
+
+    return {"chain": chain, "direct_reasons": direct_reasons}
 
 
 @app.post("/api/parties/{group_id}/merge")
@@ -1553,6 +2330,313 @@ async def api_party_dismiss_suggestion(group_id: str, request: Request):
     })
 
     return {"status": "dismissed", "group_id": group_id, "suggested_group": suggested_group}
+
+
+# ---------------------------------------------------------------------------
+# Party Review (investigative review page)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/party-review/search")
+def api_party_review_search(q: str = ""):
+    """Fuzzy search across all party group fields, ranked by relevance."""
+    if not PARTIES_PATH.exists():
+        raise HTTPException(404, "Party registry not built. Run: cleo parties")
+
+    q = q.strip()
+    if not q:
+        return []
+
+    from cleo.parties.registry import load_registry
+    reg = load_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+    overrides = reg.get("overrides", {})
+    confirmed = overrides.get("confirmed", {})
+    q_lower = q.lower()
+
+    results = []
+    for gid, p in parties_data.items():
+        score = 0.0
+        matched_fields: list[str] = []
+        matched_values: list[str] = []
+
+        # Search names
+        for name in p.get("names", []):
+            name_lower = name.lower()
+            if name_lower == q_lower:
+                score += 100
+                if "name" not in matched_fields:
+                    matched_fields.append("name")
+                matched_values.append(name)
+            elif name_lower.startswith(q_lower):
+                score += 50
+                if "name" not in matched_fields:
+                    matched_fields.append("name")
+                matched_values.append(name)
+            elif q_lower in name_lower:
+                score += 10
+                if "name" not in matched_fields:
+                    matched_fields.append("name")
+                matched_values.append(name)
+
+        # Search aliases
+        for alias in p.get("aliases", []):
+            alias_lower = alias.lower()
+            if alias_lower == q_lower:
+                score += 80
+                if "alias" not in matched_fields:
+                    matched_fields.append("alias")
+                matched_values.append(alias)
+            elif q_lower in alias_lower:
+                score += 10
+                if "alias" not in matched_fields:
+                    matched_fields.append("alias")
+                matched_values.append(alias)
+
+        # Search alternate_names
+        for alt in p.get("alternate_names", []):
+            alt_lower = alt.lower()
+            if alt_lower == q_lower:
+                score += 80
+                if "alt_name" not in matched_fields:
+                    matched_fields.append("alt_name")
+                matched_values.append(alt)
+            elif q_lower in alt_lower:
+                score += 10
+                if "alt_name" not in matched_fields:
+                    matched_fields.append("alt_name")
+                matched_values.append(alt)
+
+        # Search contacts
+        for contact in p.get("contacts", []):
+            contact_lower = contact.lower()
+            if contact_lower == q_lower:
+                score += 60
+                if "contact" not in matched_fields:
+                    matched_fields.append("contact")
+                matched_values.append(contact)
+            elif q_lower in contact_lower:
+                score += 10
+                if "contact" not in matched_fields:
+                    matched_fields.append("contact")
+                matched_values.append(contact)
+
+        # Search phones
+        q_digits = "".join(c for c in q if c.isdigit())
+        if q_digits and len(q_digits) >= 3:
+            for phone in p.get("phones", []):
+                phone_digits = "".join(c for c in phone if c.isdigit())
+                if q_digits in phone_digits:
+                    score += 60
+                    if "phone" not in matched_fields:
+                        matched_fields.append("phone")
+                    matched_values.append(phone)
+
+        # Search addresses
+        for addr in p.get("addresses", []):
+            if q_lower in addr.lower():
+                score += 60
+                if "address" not in matched_fields:
+                    matched_fields.append("address")
+                matched_values.append(addr)
+
+        # Search display_name
+        dn = p.get("display_name_override") or p.get("display_name", "")
+        if dn and q_lower in dn.lower() and "name" not in matched_fields:
+            score += 10
+            matched_fields.append("display_name")
+            matched_values.append(dn)
+
+        if score > 0:
+            # Tiebreaker: more transactions = more relevant
+            score += p.get("transaction_count", 0) * 0.1
+            results.append({
+                "group_id": gid,
+                "display_name": p.get("display_name_override") or p.get("display_name", ""),
+                "is_company": p.get("is_company", True),
+                "names_count": len(p.get("names", [])),
+                "transaction_count": p.get("transaction_count", 0),
+                "matched_fields": matched_fields,
+                "matched_values": sorted(set(matched_values)),
+                "relevance_score": round(score, 1),
+            })
+
+    results.sort(key=lambda r: r["relevance_score"], reverse=True)
+    return results[:50]
+
+
+@app.get("/api/party-review/needs-review")
+def api_party_review_needs_review():
+    """Groups sorted by suspicion score for the review queue."""
+    if not PARTIES_PATH.exists():
+        raise HTTPException(404, "Party registry not built. Run: cleo parties")
+
+    from cleo.parties.registry import load_registry
+    reg = load_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+    overrides = reg.get("overrides", {})
+    confirmed = overrides.get("confirmed", {})
+
+    results = []
+    for gid, p in parties_data.items():
+        score = 0
+        names_count = len(p.get("names", []))
+        txn_count = p.get("transaction_count", 0)
+
+        # Suspicion: many names
+        if names_count >= 20:
+            score += 50
+        elif names_count >= 10:
+            score += 30
+
+        # Suspicion: no confirmed names
+        if not confirmed.get(gid):
+            score += 15
+
+        # Suspicion: high name diversity (names/txns close to 1.0)
+        if txn_count > 0:
+            diversity = names_count / txn_count
+            if diversity > 0.8:
+                score += 10
+
+        # Suspicion: has alternate_names
+        alt_count = len(p.get("alternate_names", []))
+        if alt_count >= 5:
+            score += 15
+        elif alt_count > 0:
+            score += 5
+
+        # Filter: score >= 20 OR (score >= 15 AND names_count >= 3)
+        if score >= 20 or (score >= 15 and names_count >= 3):
+            results.append({
+                "group_id": gid,
+                "display_name": p.get("display_name_override") or p.get("display_name", ""),
+                "is_company": p.get("is_company", True),
+                "names_count": names_count,
+                "transaction_count": txn_count,
+                "suspicion_score": score,
+                "has_confirmed": bool(confirmed.get(gid)),
+            })
+
+    results.sort(key=lambda r: r["suspicion_score"], reverse=True)
+    return results[:200]
+
+
+@app.get("/api/party-review/appearances/{group_id}")
+def api_party_review_appearances(group_id: str):
+    """Load full parsed RT records for each appearance in a party group."""
+    if not PARTIES_PATH.exists():
+        raise HTTPException(404, "Party registry not built. Run: cleo parties")
+
+    from cleo.parties.registry import load_registry
+    reg = load_registry(PARTIES_PATH)
+    parties_data = reg.get("parties", {})
+
+    if group_id not in parties_data:
+        raise HTTPException(404, f"Party group not found: {group_id}")
+
+    p = parties_data[group_id]
+    act = active_dir()
+    if act is None:
+        raise HTTPException(404, "No active parse version")
+
+    appearances = []
+    skipped = 0
+
+    # Frequency counters for highlighting
+    phone_freq: dict[str, int] = {}
+    contact_freq: dict[str, int] = {}
+    address_freq: dict[str, int] = {}
+
+    for app_entry in p.get("appearances", []):
+        rt_id = app_entry["rt_id"]
+        role = app_entry["role"]
+        rt_file = act / f"{rt_id}.json"
+
+        if not rt_file.exists():
+            skipped += 1
+            continue
+
+        data = json.loads(rt_file.read_text(encoding="utf-8"))
+        party_key = "transferor" if role == "seller" else "transferee"
+        party = data.get(party_key, {})
+        txn = data.get("transaction", {})
+
+        addr = txn.get("address", {})
+        site = data.get("site", {})
+        consideration = data.get("consideration", {})
+        broker = data.get("broker", {})
+        extras = data.get("export_extras", {})
+
+        entry = {
+            "rt_id": rt_id,
+            "role": role,
+            # Party fields
+            "entity_name": party.get("name", app_entry.get("name", "")),
+            "contact": party.get("contact", ""),
+            "attention": party.get("attention", ""),
+            "phone": party.get("phone", ""),
+            "phones": party.get("phones", []),
+            "address": party.get("address", ""),
+            "aliases": party.get("aliases", []),
+            "alternate_names": party.get("alternate_names", []),
+            "company_lines": party.get("company_lines", []),
+            "contact_lines": party.get("contact_lines", []),
+            "address_lines": party.get("address_lines", []),
+            "officer_titles": party.get("officer_titles", []),
+            # Transaction fields
+            "sale_date_iso": app_entry.get("sale_date_iso", ""),
+            "sale_date": txn.get("sale_date", ""),
+            "sale_price": app_entry.get("sale_price", ""),
+            "prop_address": app_entry.get("prop_address", addr.get("address", "")),
+            "prop_address_suite": addr.get("address_suite", ""),
+            "prop_city": app_entry.get("prop_city", addr.get("city", "")),
+            "prop_municipality": addr.get("municipality", ""),
+            "prop_province": addr.get("province", ""),
+            "prop_postal_code": addr.get("postal_code", "") or extras.get("postal_code", ""),
+            "arn": txn.get("arn", ""),
+            "pins": txn.get("pins", []),
+            # Site
+            "legal_description": site.get("legal_description", ""),
+            "site_area": site.get("site_area", ""),
+            "site_area_units": site.get("site_area_units", ""),
+            "zoning": site.get("zoning", ""),
+            # Consideration
+            "cash": consideration.get("cash", ""),
+            "assumed_debt": consideration.get("assumed_debt", ""),
+            "consideration_verbatim": consideration.get("verbatim", ""),
+            # Broker
+            "brokerage": broker.get("brokerage", ""),
+            "broker_phone": broker.get("phone", ""),
+            # Extras
+            "building_sf": extras.get("building_sf", ""),
+            "description": data.get("description", ""),
+            "photos": data.get("photos", []),
+        }
+        appearances.append(entry)
+
+        # Track frequencies
+        for ph in entry["phones"]:
+            if ph:
+                phone_freq[ph] = phone_freq.get(ph, 0) + 1
+        if entry["contact"]:
+            contact_freq[entry["contact"]] = contact_freq.get(entry["contact"], 0) + 1
+        if entry["address"]:
+            address_freq[entry["address"]] = address_freq.get(entry["address"], 0) + 1
+
+    # Only include fields appearing 2+ times
+    field_frequencies = {
+        "phones": {k: v for k, v in phone_freq.items() if v >= 2},
+        "contacts": {k: v for k, v in contact_freq.items() if v >= 2},
+        "addresses": {k: v for k, v in address_freq.items() if v >= 2},
+    }
+
+    return {
+        "group_id": group_id,
+        "appearances": appearances,
+        "total": len(appearances),
+        "skipped": skipped,
+        "field_frequencies": field_frequencies,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1812,7 +2896,7 @@ def _log_party_edit(entry: dict) -> None:
 @app.get("/api/html/{rt_id}")
 def api_html(rt_id: str):
     """Serve raw HTML file for iframe display."""
-    path = HTML_DIR / f"{rt_id}.html"
+    path = HtmlIndex().resolve(rt_id)
     if not path.exists():
         raise HTTPException(404, f"HTML not found: {rt_id}")
     return FileResponse(path, media_type="text/html")
@@ -1843,6 +2927,15 @@ def api_active(rt_id: str):
         data.get("transaction", {}).get("sale_price", ""),
         data.get("export_extras", {}).get("building_sf", ""),
     )
+    # Enrich parties with group_id and contact_id for linking
+    for party_key in ("transferor", "transferee"):
+        if party_key in data:
+            data[party_key]["group_id"] = _lookup_group_id(
+                data[party_key].get("name", "")
+            )
+            data[party_key]["contact_id"] = _make_contact_id(
+                data[party_key].get("contact", "")
+            )
     return JSONResponse(data)
 
 
@@ -2710,6 +3803,146 @@ def api_dashboard():
 
 
 # ---------------------------------------------------------------------------
+# Dashboard — Pipeline & Prospects
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/dashboard/pipeline")
+def api_dashboard_pipeline():
+    """Aggregate CRM deal data by stage for the pipeline summary."""
+    deals_data: dict = {}
+    if CRM_DEALS_PATH.exists():
+        deals_data = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8"))
+
+    deals = deals_data.get("deals", {})
+
+    # Load properties for price lookup
+    props: dict = {}
+    if PROPERTIES_PATH.exists():
+        from cleo.properties.registry import load_registry
+        reg = load_registry(PROPERTIES_PATH)
+        props = reg.get("properties", {})
+
+    stage_agg: dict[str, dict] = {}
+    active_stages = {"active_deal", "in_negotiation", "under_contract"}
+    closed_stages = {"closed_won", "lost_cancelled"}
+    all_stages = active_stages | closed_stages
+
+    for stage in all_stages:
+        stage_agg[stage] = {"count": 0, "value": 0}
+
+    for deal in deals.values():
+        stage = deal.get("stage", "active_deal")
+        if stage not in all_stages:
+            continue
+        stage_agg[stage]["count"] += 1
+        # Try to get deal value from associated property's latest sale price
+        prop_id = deal.get("prop_id", "")
+        if prop_id and prop_id in props:
+            p = props[prop_id]
+            price = _parse_price_float(p.get("latest_sale_price", ""))
+            if price:
+                stage_agg[stage]["value"] += price
+
+    total_active = sum(stage_agg[s]["count"] for s in active_stages)
+    total_active_value = sum(stage_agg[s]["value"] for s in active_stages)
+
+    return JSONResponse({
+        "stages": stage_agg,
+        "total_active": total_active,
+        "total_active_value": round(total_active_value),
+    })
+
+
+@app.get("/api/dashboard/prospects")
+def api_dashboard_prospects():
+    """Return top prospecting targets: stale properties and repeat traders."""
+    # Load properties
+    props: dict = {}
+    if PROPERTIES_PATH.exists():
+        from cleo.properties.registry import load_registry
+        reg = load_registry(PROPERTIES_PATH)
+        props = reg.get("properties", {})
+
+    # Load deals to determine pipeline status
+    deals_data: dict = {}
+    if CRM_DEALS_PATH.exists():
+        deals_data = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8"))
+    deals = deals_data.get("deals", {})
+
+    # Build set of prop_ids that already have deals
+    props_with_deals: set[str] = set()
+    for deal in deals.values():
+        pid = deal.get("prop_id", "")
+        if pid:
+            props_with_deals.add(pid)
+
+    # Load brand matches for enrichment
+    brand_matches = _get_brand_matches()
+
+    from datetime import datetime
+    now = datetime.now()
+
+    # Stale properties: oldest last_sale_date, not yet in pipeline
+    stale: list[dict] = []
+    for pid, p in props.items():
+        if pid in props_with_deals:
+            continue
+        iso = p.get("latest_sale_date_iso", "")
+        if not iso or len(iso) < 10:
+            continue
+        try:
+            sale_dt = datetime.strptime(iso[:10], "%Y-%m-%d")
+            days = (now - sale_dt).days
+        except ValueError:
+            continue
+        brands = sorted(set(e["brand"] for e in brand_matches.get(pid, [])))
+        stale.append({
+            "prop_id": pid,
+            "address": p.get("address", ""),
+            "city": p.get("city", ""),
+            "last_sale_date": iso[:10],
+            "last_price": p.get("latest_sale_price", ""),
+            "days_since_sale": days,
+            "brands": brands,
+            "pipeline_status": "not_started",
+        })
+
+    stale.sort(key=lambda x: x["days_since_sale"], reverse=True)
+    stale_top = stale[:10]
+
+    # Repeat traders: party groups with highest buy+sell count
+    parties_data: dict = {}
+    if PARTIES_PATH.exists():
+        parties_data = _load_json(PARTIES_PATH)
+
+    groups = parties_data.get("groups", {})
+    traders: list[dict] = []
+    for gid, g in groups.items():
+        buy = g.get("buy_count", 0)
+        sell = g.get("sell_count", 0)
+        total = buy + sell
+        if total < 2:
+            continue
+        traders.append({
+            "group_id": gid,
+            "name": g.get("canonical_name", ""),
+            "buy_count": buy,
+            "sell_count": sell,
+            "total_volume": round(g.get("total_volume", 0)),
+            "last_active": g.get("last_active", ""),
+        })
+
+    traders.sort(key=lambda x: x["buy_count"] + x["sell_count"], reverse=True)
+    traders_top = traders[:10]
+
+    return JSONResponse({
+        "stale_properties": stale_top,
+        "repeat_traders": traders_top,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Universal search
 # ---------------------------------------------------------------------------
 
@@ -2821,8 +4054,11 @@ _ALLOWED_COMMANDS: dict[str, list[str]] = {
     "rebuild-properties": ["properties"],
     "rebuild-parties": ["parties"],
     "rebuild-all": ["properties", "&&", "parties"],
+    "apply-geocodes": ["properties", "--apply-geocodes"],
+    "refresh-geocodes": ["properties", "--apply-geocodes", "--refresh"],
     "frontend-build": ["_frontend_build"],
     "clear-caches": ["_clear_caches"],
+    "restart-backend": ["_restart_backend"],
 }
 
 _admin_log: list[dict] = []
@@ -2837,6 +4073,14 @@ async def api_admin_run(request: Request):
         raise HTTPException(400, f"Unknown command: {cmd_key}")
 
     python_bin = sys.executable
+
+    # Special: touch a file to trigger uvicorn --reload (instant, no streaming)
+    if cmd_key == "restart-backend":
+        init_file = Path(__file__).parent.parent / "__init__.py"
+        init_file.touch()
+        entry = {"command": cmd_key, "ts": datetime.now().isoformat(), "ok": True, "output": "Touched cleo/__init__.py — uvicorn reload triggered. Only works when started via ./dev.sh."}
+        _admin_log.append(entry)
+        return entry
 
     # Special: clear in-process caches (instant, no streaming needed)
     if cmd_key == "clear-caches":
@@ -2890,8 +4134,8 @@ async def api_admin_run(request: Request):
                 ok = False
                 break
 
-        # Auto-clear properties cache after rebuild
-        if ok and cmd_key in ("rebuild-properties", "rebuild-all"):
+        # Auto-clear properties cache after rebuild or geocode apply
+        if ok and cmd_key in ("rebuild-properties", "rebuild-all", "apply-geocodes", "refresh-geocodes"):
             _clear_props_cache()
             yield "data: [caches cleared]\n\n"
 
@@ -2917,6 +4161,197 @@ def _clear_props_cache():
 def api_admin_log():
     """Return recent admin command log (last 20)."""
     return _admin_log[-20:]
+
+
+# ---------------------------------------------------------------------------
+# Building Footprints (front-facing app)
+# ---------------------------------------------------------------------------
+
+from cleo.config import FOOTPRINTS_PATH, FOOTPRINTS_MATCHES_PATH  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Parcel boundary endpoints
+# ---------------------------------------------------------------------------
+
+_parcel_index = None
+_parcel_index_mtime: float = 0
+
+
+def _get_parcel_index():
+    """Lazy-load the parcel spatial index, reloading when file changes."""
+    global _parcel_index, _parcel_index_mtime
+    if PARCELS_PATH.exists():
+        mtime = PARCELS_PATH.stat().st_mtime
+        if _parcel_index is None or mtime != _parcel_index_mtime:
+            from cleo.parcels.spatial import ParcelIndex
+            _parcel_index = ParcelIndex()
+            _parcel_index.load()
+            _parcel_index_mtime = mtime
+    return _parcel_index
+
+
+@app.get("/api/parcels/geojson")
+def api_parcels_geojson(
+    south: float, west: float, north: float, east: float
+):
+    """Return parcel polygons within the map viewport.
+
+    Only returns data -- activated at zoom >= 15 by the frontend.
+    """
+    index = _get_parcel_index()
+    if index is None or index.count == 0:
+        return {"type": "FeatureCollection", "features": []}
+
+    features = index.features_in_bbox(south, west, north, east)
+    if len(features) > 2000:
+        features = features[:2000]
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/properties/{prop_id}/parcel")
+def api_property_parcel(prop_id: str):
+    """Return the parcel polygon for a specific property, with group and brands."""
+    from cleo.parcels.store import ParcelStore
+
+    store = ParcelStore()
+    parcel = store.get_parcel_for_property(prop_id)
+    if parcel is None:
+        raise HTTPException(404, "No parcel for this property")
+
+    pcl_props = parcel.get("properties", {})
+
+    # Read consolidation fields from properties.json
+    prop_data = {}
+    if PROPERTIES_PATH.exists():
+        reg = json.loads(PROPERTIES_PATH.read_text(encoding="utf-8"))
+        prop_data = reg.get("properties", {}).get(prop_id, {})
+
+    return {
+        "parcel_id": pcl_props.get("pcl_id"),
+        "municipality": pcl_props.get("municipality", ""),
+        "pin": pcl_props.get("pin"),
+        "arn": pcl_props.get("arn"),
+        "address": pcl_props.get("address"),
+        "city": pcl_props.get("city"),
+        "zone_code": pcl_props.get("zone_code"),
+        "zone_desc": pcl_props.get("zone_desc"),
+        "area_sqm": pcl_props.get("area_sqm"),
+        "assessment": pcl_props.get("assessment"),
+        "property_use": pcl_props.get("property_use"),
+        "legal_desc": pcl_props.get("legal_desc"),
+        "geometry": parcel.get("geometry"),
+        "parcel_group": prop_data.get("parcel_group", []),
+        "parcel_brands": prop_data.get("parcel_brands", []),
+        "parcel_building_count": prop_data.get("parcel_building_count"),
+    }
+
+
+@app.get("/api/parcels/stats")
+def api_parcels_stats():
+    """Return parcel coverage and harvest statistics."""
+    from cleo.parcels.harvester import harvest_status
+    from cleo.parcels.matcher import match_status
+
+    return {
+        "harvest": harvest_status(),
+        "matches": match_status(),
+    }
+
+
+@app.get("/api/parcels/consolidation")
+def api_parcels_consolidation():
+    """Return parcel consolidation summary."""
+    from cleo.config import PARCELS_CONSOLIDATION_PATH
+
+    if not PARCELS_CONSOLIDATION_PATH.exists():
+        raise HTTPException(404, "No consolidation data. Run 'cleo parcel-enrich' first.")
+
+    return json.loads(PARCELS_CONSOLIDATION_PATH.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Building footprint endpoints
+# ---------------------------------------------------------------------------
+
+_footprint_index = None
+_footprint_index_mtime: float = 0
+
+
+def _get_footprint_index():
+    """Lazy-load the footprint spatial index, reloading when file changes."""
+    global _footprint_index, _footprint_index_mtime
+    if FOOTPRINTS_PATH.exists():
+        mtime = FOOTPRINTS_PATH.stat().st_mtime
+        if _footprint_index is None or mtime != _footprint_index_mtime:
+            from cleo.footprints.spatial import FootprintIndex
+            _footprint_index = FootprintIndex()
+            _footprint_index.load()
+            _footprint_index_mtime = mtime
+    return _footprint_index
+
+
+@app.get("/api/footprints/geojson")
+def api_footprints_geojson(
+    south: float, west: float, north: float, east: float
+):
+    """Return building footprint polygons within the map viewport.
+
+    Only returns data — activated at zoom >= 15 by the frontend.
+    """
+    index = _get_footprint_index()
+    if index is None or index.count == 0:
+        return {"type": "FeatureCollection", "features": []}
+
+    features = index.features_in_bbox(south, west, north, east)
+    # Cap at 2000 features to avoid huge payloads
+    if len(features) > 2000:
+        features = features[:2000]
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/properties/{prop_id}/footprint")
+def api_property_footprint(prop_id: str):
+    """Return the building footprint polygon for a specific property."""
+    if not FOOTPRINTS_MATCHES_PATH.exists():
+        raise HTTPException(404, "No footprint matches")
+
+    matches = json.loads(FOOTPRINTS_MATCHES_PATH.read_text(encoding="utf-8"))
+    prop_fp = matches.get("property_footprints", {}).get(prop_id)
+    if not prop_fp:
+        raise HTTPException(404, "No footprint for this property")
+
+    fp_id = prop_fp.get("footprint_id")
+    index = _get_footprint_index()
+    if index is None:
+        raise HTTPException(404, "Footprint index not loaded")
+
+    geom = index.get_polygon_geojson(fp_id)
+    if geom is None:
+        raise HTTPException(404, "Footprint geometry not found")
+
+    area = index.get_area_sqm(fp_id)
+    feat_props = index.get_feature(fp_id) or {}
+
+    return {
+        "footprint_id": fp_id,
+        "method": prop_fp.get("method", ""),
+        "geometry": geom,
+        "area_sqm": area,
+        "building_type": feat_props.get("building_type", ""),
+        "building_name": feat_props.get("building_name", ""),
+    }
+
+
+@app.get("/api/footprints/stats")
+def api_footprints_stats():
+    """Return footprint coverage and matching statistics."""
+    from cleo.footprints.ingest import footprint_status
+    from cleo.footprints.matcher import match_status
+
+    return {
+        "footprints": footprint_status(),
+        "matches": match_status(),
+    }
 
 
 # ---------------------------------------------------------------------------

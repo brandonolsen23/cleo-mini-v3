@@ -36,27 +36,36 @@ export interface PropertyRef {
 }
 
 export type DealStage =
-  | "lead"
-  | "contacted"
-  | "negotiating"
+  | "active_deal"
+  | "in_negotiation"
   | "under_contract"
   | "closed_won"
+  | "lost_cancelled"
+  // legacy
+  | "lead"
+  | "contacted"
+  | "qualifying"
+  | "negotiating"
   | "closed_lost";
 
+/** Active stages for new deals */
 export const DEAL_STAGES: DealStage[] = [
-  "lead",
-  "contacted",
-  "negotiating",
+  "active_deal",
+  "in_negotiation",
   "under_contract",
   "closed_won",
-  "closed_lost",
+  "lost_cancelled",
 ];
 
 export const STAGE_LABELS: Record<DealStage, string> = {
+  active_deal: "Active Deal",
+  in_negotiation: "In Negotiation",
+  under_contract: "Under Contract",
+  closed_won: "Closed / Won",
+  lost_cancelled: "Lost / Cancelled",
   lead: "Lead",
   contacted: "Contacted",
+  qualifying: "Qualifying",
   negotiating: "Negotiating",
-  under_contract: "Under Contract",
-  closed_won: "Closed Won",
   closed_lost: "Closed Lost",
 };

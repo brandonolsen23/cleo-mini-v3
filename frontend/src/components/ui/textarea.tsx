@@ -1,4 +1,5 @@
 import * as React from "react";
+import { TextArea as RadixTextArea } from "@radix-ui/themes";
 
 import { cn } from "@/lib/utils";
 
@@ -6,15 +7,14 @@ export interface TextareaProps
   extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {}
 
 const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
-  ({ className, ...props }, ref) => {
+  ({ className, color: _color, ...props }, ref) => {
     return (
-      <textarea
-        className={cn(
-          "flex min-h-[80px] w-full rounded-xl border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:shadow-input-typing disabled:cursor-not-allowed disabled:opacity-50",
-          className
-        )}
+      <RadixTextArea
+        size="2"
+        variant="surface"
+        className={cn(className)}
         ref={ref}
-        {...props}
+        {...(props as any)}
       />
     );
   }

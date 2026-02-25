@@ -23,8 +23,8 @@ const commands: CommandDef[] = [
   },
   {
     key: "rebuild-parties",
-    label: "Rebuild Parties",
-    description: "Rebuild the party registry (cleo parties).",
+    label: "Rebuild Companies",
+    description: "Rebuild the company registry (cleo parties).",
     variant: "default",
   },
   {
@@ -41,6 +41,21 @@ const commands: CommandDef[] = [
   },
 ];
 
+const geocodeCommands: CommandDef[] = [
+  {
+    key: "apply-geocodes",
+    label: "Apply Geocodes",
+    description: "Fill in lat/lng for properties missing coordinates. Safe to run anytime — skips properties that already have coords.",
+    variant: "default",
+  },
+  {
+    key: "refresh-geocodes",
+    label: "Refresh All Coords",
+    description: "Re-compute coordinates for ALL properties using the best multi-provider median (Mapbox/Geocodio/HERE). Also generates a divergence report for addresses where providers disagree by 500m+.",
+    variant: "default",
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Persist last-known durations in localStorage so we can show estimates
 // ---------------------------------------------------------------------------
@@ -51,6 +66,8 @@ const DEFAULT_ESTIMATES: Record<string, number> = {
   "rebuild-parties": 120,
   "rebuild-all": 420,
   "frontend-build": 30,
+  "apply-geocodes": 60,
+  "refresh-geocodes": 120,
 };
 
 function loadDurations(): Record<string, number> {
@@ -234,6 +251,72 @@ export default function AdminPage() {
         These buttons are for data rebuilds.
       </p>
 
+      <h2 className="text-h5 font-semibold mb-3">Review Tools</h2>
+      <div className="space-y-3 mb-8">
+        <div className="flex items-center gap-4 p-4 bg-b-surface2 rounded-xl">
+          <div className="flex-1 min-w-0">
+            <p className="text-body-1 font-medium">Party Review</p>
+            <p className="text-body-2 text-t-secondary">
+              Investigate party clustering decisions. Search names, view appearances side by side, confirm or split groups.
+            </p>
+          </div>
+          <Button
+            variant="default"
+            size="sm"
+            className="shrink-0"
+            onClick={() => window.open("/api/party-review-page", "_blank")}
+          >
+            Open
+          </Button>
+        </div>
+      </div>
+
+      <h2 className="text-h5 font-semibold mb-3">Dev Server</h2>
+      <div className="space-y-3 mb-8">
+        <div className="flex items-center gap-4 p-4 bg-b-surface2 rounded-xl">
+          <div className="flex-1 min-w-0">
+            <p className="text-body-1 font-medium">Restart Backend</p>
+            <p className="text-body-2 text-t-secondary">
+              Trigger uvicorn reload to pick up Python code changes. Requires <code className="bg-black/5 px-1 rounded">./dev.sh</code>.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={running !== null}
+            onClick={() => runCommand("restart-backend")}
+            className="shrink-0"
+          >
+            {running === "restart-backend" ? "Running..." : "Restart"}
+          </Button>
+        </div>
+      </div>
+
+      <h2 className="text-h5 font-semibold mb-3">Geocoding</h2>
+      <div className="space-y-3 mb-8">
+        {geocodeCommands.map((cmd) => (
+          <div
+            key={cmd.key}
+            className="flex items-center gap-4 p-4 bg-b-surface2 rounded-xl"
+          >
+            <div className="flex-1 min-w-0">
+              <p className="text-body-1 font-medium">{cmd.label}</p>
+              <p className="text-body-2 text-t-secondary">{cmd.description}</p>
+            </div>
+            <Button
+              variant={cmd.variant}
+              size="sm"
+              disabled={running !== null}
+              onClick={() => runCommand(cmd.key)}
+              className="shrink-0"
+            >
+              {running === cmd.key ? "Running..." : "Run"}
+            </Button>
+          </div>
+        ))}
+      </div>
+
+      <h2 className="text-h5 font-semibold mb-3">Commands</h2>
       <div className="space-y-3 mb-8">
         {commands.map((cmd) => (
           <div

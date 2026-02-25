@@ -21,9 +21,20 @@ export interface PropertySummary {
   owner: string;
   has_contact: boolean;
   has_phone: boolean;
+  building_sf: string;
+  site_area: string;
   brands: string[];
   has_gw_data: boolean;
+  pipeline_status: string;
+  pin_status: string;
   _search_text: string;
+}
+
+export interface LinkedOperator {
+  op_id: string;
+  name: string;
+  slug: string;
+  url: string;
 }
 
 export interface PropertyDetail {
@@ -43,6 +54,7 @@ export interface PropertyDetail {
   transactions: PropertyTransaction[];
   brands: string[];
   gw_records: GWRecord[];
+  linked_operators: LinkedOperator[];
 }
 
 export interface PropertyTransaction {
@@ -52,7 +64,10 @@ export interface PropertyTransaction {
   sale_date_iso: string;
   seller: string;
   buyer: string;
+  seller_group_id?: string | null;
+  buyer_group_id?: string | null;
   buyer_contact: string;
+  buyer_contact_id?: string | null;
   buyer_phone: string;
   building_sf: string;
   ppsf: string | null;

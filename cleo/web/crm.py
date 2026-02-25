@@ -20,14 +20,16 @@ router = APIRouter(prefix="/api/crm", tags=["crm"])
 # ---------------------------------------------------------------------------
 
 _DEAL_STAGES = [
-    "lead",
-    "contacted",
-    "negotiating",
+    "active_deal",
+    "in_negotiation",
     "under_contract",
     "closed_won",
-    "closed_lost",
+    "lost_cancelled",
 ]
-_CLOSED_STAGES = {"closed_won", "closed_lost"}
+# Legacy stages still accepted for reads but not offered for new deals
+_LEGACY_STAGES = {"lead", "contacted", "qualifying", "negotiating", "closed_lost"}
+_ALL_STAGES = set(_DEAL_STAGES) | _LEGACY_STAGES
+_CLOSED_STAGES = {"closed_won", "lost_cancelled", "closed_lost"}
 
 
 def _load_contacts() -> dict:
@@ -271,7 +273,7 @@ async def create_deal(request: Request):
     deal_id = _next_id(store, "D")
     now = _now()
 
-    stage = body.get("stage", "lead")
+    stage = body.get("stage", "active_deal")
     if stage not in _DEAL_STAGES:
         raise HTTPException(400, f"Invalid stage: {stage}")
 
@@ -308,7 +310,7 @@ async def update_deal(deal_id: str, request: Request):
                 changes[field] = val
                 d[field] = val
     if "stage" in body:
-        if body["stage"] not in _DEAL_STAGES:
+        if body["stage"] not in _ALL_STAGES:
             raise HTTPException(400, f"Invalid stage: {body['stage']}")
         if body["stage"] != d.get("stage"):
             changes["stage"] = body["stage"]

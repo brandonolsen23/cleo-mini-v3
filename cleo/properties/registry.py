@@ -68,6 +68,8 @@ def build_registry(
 
     # Scan all parsed JSON files
     scanned: dict[str, dict] = {}  # dedup_key -> {address, city, municipality, province, rt_ids}
+    # Track physical property facts per RT ID for later backfill
+    rt_facts: dict[str, dict] = {}  # rt_id -> {building_sf, site_area, sale_date_iso}
 
     for f in sorted(parsed_dir.glob("*.json")):
         if f.stem == "_meta":
@@ -76,6 +78,16 @@ def build_registry(
         rt_id = data.get("rt_id", f.stem)
         tx = data.get("transaction", {})
         addr = tx.get("address", {})
+
+        # Collect physical property facts from this transaction
+        building_sf = data.get("export_extras", {}).get("building_sf", "")
+        site_area = data.get("site", {}).get("site_area", "")
+        if building_sf or site_area:
+            rt_facts[rt_id] = {
+                "building_sf": building_sf,
+                "site_area": site_area,
+                "sale_date_iso": tx.get("sale_date_iso", ""),
+            }
 
         address = addr.get("address", "").strip()
         city = addr.get("city", "").strip()
@@ -222,6 +234,30 @@ def build_registry(
         if not merged:
             properties[pid] = prop
 
+    # Backfill physical property facts (building_sf, site_area) from linked
+    # transactions.  For each property, scan all linked RT IDs and pick the
+    # latest non-empty value (by sale_date_iso) for each field.  Values are
+    # always recomputed from transactions so that fixing a bad link and
+    # rebuilding cleanly removes stale data.
+    for _pid, prop in properties.items():
+        best_sf = ""
+        best_sf_iso = ""
+        best_area = ""
+        best_area_iso = ""
+        for rt_id in prop.get("rt_ids", []):
+            facts = rt_facts.get(rt_id)
+            if not facts:
+                continue
+            iso = facts.get("sale_date_iso", "")
+            if facts["building_sf"] and iso >= best_sf_iso:
+                best_sf = facts["building_sf"]
+                best_sf_iso = iso
+            if facts["site_area"] and iso >= best_area_iso:
+                best_area = facts["site_area"]
+                best_area_iso = iso
+        prop["building_sf"] = best_sf
+        prop["site_area"] = best_area
+
     # Sort by property ID
     properties = dict(sorted(properties.items()))
 
@@ -260,27 +296,46 @@ def load_registry(path: Path) -> dict:
 
 def backfill_geocodes(
     registry: dict,
-    cache_path: Path,
+    cache_path: Path | None = None,
     extracted_dir: Path | None = None,
+    coord_store=None,
+    refresh_all: bool = False,
 ) -> dict:
-    """Apply geocode cache coordinates to properties missing lat/lng.
+    """Apply geocode coordinates to properties missing lat/lng.
 
     Matching strategy:
-    1. Direct match: property (address, city) -> cache key (addr, city) parts
-    2. RT ID lookup: for unmatched RT-sourced properties, check their extracted
-       expanded addresses against the cache
+    1. Direct match: property (address, city) -> coordinate store or cache
+    2. RT ID lookup: for RT-sourced properties, check extracted expanded addresses
+    3. GW address build: for GW-sourced properties with no RT IDs, build
+       geocodable address from (address, city, province, postal_code) and look up
+
+    Args:
+        registry: Property registry dict.
+        cache_path: Path to legacy geocode_cache.json (used if coord_store is None).
+        extracted_dir: Active extracted JSON directory.
+        coord_store: CoordinateStore instance (preferred over cache_path).
+        refresh_all: If True, re-compute coords for ALL properties using
+            best multi-provider median, not just those missing lat/lng.
 
     Returns:
-        {"updated": int, "already_had": int, "no_match": int}
+        {"updated": int, "already_had": int, "no_match": int, "refreshed": int}
     """
-    cache = json.loads(cache_path.read_text(encoding="utf-8"))
     props = registry.get("properties", {})
 
-    # Build cache lookup: (normalized_addr, normalized_city) -> (lat, lng)
     def _norm(s: str) -> str:
         s = s.upper().strip()
         s = re.sub(r"[.,]", "", s)
         return re.sub(r"\s+", " ", s)
+
+    # If using CoordinateStore, use its best_coords() method
+    if coord_store is not None:
+        return _backfill_from_coord_store(props, coord_store, extracted_dir, _norm, refresh_all)
+
+    # Legacy path: use geocode_cache.json
+    if cache_path is None or not cache_path.exists():
+        return {"updated": 0, "already_had": len(props), "no_match": 0}
+
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
 
     cache_by_addr_city: dict[tuple[str, str], tuple[float, float]] = {}
     cache_by_key_upper: dict[str, tuple[float, float]] = {}
@@ -341,4 +396,106 @@ def backfill_geocodes(
 
         no_match += 1
 
-    return {"updated": updated, "already_had": already_had, "no_match": no_match}
+    return {"updated": updated, "already_had": already_had, "no_match": no_match, "refreshed": 0}
+
+
+def _resolve_best_coords(prop, coord_store, extracted_dir):
+    """Try all strategies to find best coords for a property.
+
+    Returns (lat, lng) or None.
+    """
+    address = prop.get("address", "").strip()
+    city = prop.get("city", "").strip()
+
+    # Strategy 1: Direct (address, city, province) lookup
+    province = prop.get("province", "Ontario")
+    postal = prop.get("postal_code", "")
+    candidates = []
+    if address and city:
+        if postal:
+            candidates.append(f"{address}, {city}, {province}, {postal}")
+        candidates.append(f"{address}, {city}, {province}")
+        candidates.append(f"{address}, {city}")
+
+    for candidate in candidates:
+        coords = coord_store.best_coords(candidate)
+        if coords:
+            return coords
+
+    # Strategy 2: RT ID -> extracted expanded addresses
+    if extracted_dir and prop.get("rt_ids"):
+        for rt_id in prop["rt_ids"]:
+            ext_path = extracted_dir / f"{rt_id}.json"
+            if not ext_path.exists():
+                continue
+            ext = json.loads(ext_path.read_text(encoding="utf-8"))
+            for addr_entry in ext.get("property", {}).get("addresses", []):
+                for expanded in addr_entry.get("expanded", []):
+                    coords = coord_store.best_coords(expanded)
+                    if coords:
+                        return coords
+
+    # Strategy 3: GW-sourced properties — build geocodable address
+    if "gw" in prop.get("sources", []) and address and city:
+        gw_candidates = [
+            f"{address}, {city}, ONTARIO",
+            f"{address.upper()}, {city.title()}, ONTARIO",
+        ]
+        if postal:
+            gw_candidates.insert(0, f"{address}, {city}, ONTARIO, {postal}")
+        for candidate in gw_candidates:
+            coords = coord_store.best_coords(candidate)
+            if coords:
+                return coords
+
+    return None
+
+
+def _backfill_from_coord_store(
+    props: dict,
+    coord_store,
+    extracted_dir: Path | None,
+    _norm,
+    refresh_all: bool = False,
+) -> dict:
+    """Backfill using CoordinateStore with best_coords() selection.
+
+    If refresh_all is True, also re-computes coords for properties that
+    already have lat/lng, updating them to the best multi-provider median.
+    """
+    updated = 0
+    already_had = 0
+    no_match = 0
+    refreshed = 0
+
+    for pid, prop in props.items():
+        has_coords = prop.get("lat") is not None
+
+        if has_coords and not refresh_all:
+            already_had += 1
+            continue
+
+        coords = _resolve_best_coords(prop, coord_store, extracted_dir)
+
+        if coords:
+            if has_coords:
+                # Already had coords — check if they changed
+                old_lat, old_lng = prop["lat"], prop["lng"]
+                if round(coords[0], 7) != round(old_lat, 7) or round(coords[1], 7) != round(old_lng, 7):
+                    prop["lat"] = coords[0]
+                    prop["lng"] = coords[1]
+                    refreshed += 1
+                else:
+                    already_had += 1
+            else:
+                prop["lat"] = coords[0]
+                prop["lng"] = coords[1]
+                updated += 1
+        else:
+            if has_coords:
+                # Keep existing coords even though we couldn't resolve new ones
+                already_had += 1
+            else:
+                no_match += 1
+
+    return {"updated": updated, "already_had": already_had, "no_match": no_match, "refreshed": refreshed}

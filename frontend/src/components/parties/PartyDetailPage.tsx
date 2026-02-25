@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import NameEvidenceDrawer from "./NameEvidenceDrawer";
 import SuggestedAffiliates from "./SuggestedAffiliates";
+import LinkedInLink from "../shared/LinkedInLink";
 
 const COLLAPSED_LIMIT = 5;
 
@@ -391,7 +392,7 @@ export default function PartyDetailPage() {
         className="h-auto px-0 py-0 text-sm text-muted-foreground hover:text-foreground hover:bg-transparent mb-4"
       >
         <ArrowLeft size={16} />
-        Back to parties
+        Back to companies
       </Button>
 
       {/* Header */}
@@ -421,6 +422,13 @@ export default function PartyDetailPage() {
             saving={saving}
             onSave={handleUrlSave}
           />
+          {data.linked_operators?.map((op) => (
+            <a key={op.op_id} href={`/app/operators/${op.op_id}`}>
+              <Badge variant="outline" className="text-blue-600 border-blue-300 hover:bg-blue-50 cursor-pointer">
+                {op.name}
+              </Badge>
+            </a>
+          ))}
           {saved && <span className="text-xs text-green-600">Saved</span>}
         </div>
         <p className="text-sm text-muted-foreground mt-1">
@@ -563,8 +571,9 @@ export default function PartyDetailPage() {
                     </dt>
                     <dd className="space-y-0.5">
                       {visibleContacts.map((c, i) => (
-                        <div key={i} className="text-sm text-foreground">
+                        <div key={i} className="flex items-center gap-1.5 text-sm text-foreground">
                           {c}
+                          <LinkedInLink name={c} />
                         </div>
                       ))}
                     </dd>

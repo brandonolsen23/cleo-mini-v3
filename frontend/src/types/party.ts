@@ -17,6 +17,13 @@ export interface PartySummary {
   _search_text: string;
 }
 
+export interface LinkedOperator {
+  op_id: string;
+  name: string;
+  slug: string;
+  url: string;
+}
+
 export interface PartyDetail {
   group_id: string;
   display_name: string;
@@ -41,6 +48,7 @@ export interface PartyDetail {
   updated: string;
   linked_properties: LinkedProperty[];
   confirmed_names: string[];
+  linked_operators: LinkedOperator[];
 }
 
 export interface PartyAppearance {

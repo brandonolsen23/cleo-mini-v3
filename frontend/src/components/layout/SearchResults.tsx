@@ -9,7 +9,7 @@ interface Props {
 const sections = [
   { key: "transactions" as const, label: "Transactions", path: "/transactions" },
   { key: "properties" as const, label: "Properties", path: "/properties" },
-  { key: "parties" as const, label: "Parties", path: "/parties" },
+  { key: "parties" as const, label: "Companies", path: "/parties" },
   { key: "contacts" as const, label: "Contacts", path: "/contacts" },
 ] as const;
 

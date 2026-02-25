@@ -83,3 +83,41 @@ export interface DashboardData {
   top_brand_12mo: TopBrand | null;
   top_brands_by_period: TopBrandsByPeriod;
 }
+
+// Pipeline types
+export interface PipelineStage {
+  count: number;
+  value: number;
+}
+
+export interface PipelineData {
+  stages: Record<string, PipelineStage>;
+  total_active: number;
+  total_active_value: number;
+}
+
+// Prospect types
+export interface StaleProperty {
+  prop_id: string;
+  address: string;
+  city: string;
+  last_sale_date: string;
+  last_price: string;
+  days_since_sale: number;
+  brands: string[];
+  pipeline_status: string;
+}
+
+export interface RepeatTrader {
+  group_id: string;
+  name: string;
+  buy_count: number;
+  sell_count: number;
+  total_volume: number;
+  last_active: string;
+}
+
+export interface ProspectsData {
+  stale_properties: StaleProperty[];
+  repeat_traders: RepeatTrader[];
+}

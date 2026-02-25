@@ -1,10 +1,5 @@
 import * as React from "react";
-import {
-  Popover as HeadlessPopover,
-  PopoverButton,
-  PopoverPanel,
-  Transition,
-} from "@headlessui/react";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 
 import { cn } from "@/lib/utils";
 
@@ -15,8 +10,12 @@ interface PopoverProps {
   children: React.ReactNode;
 }
 
-function Popover({ children }: PopoverProps) {
-  return <HeadlessPopover className="relative">{children}</HeadlessPopover>;
+function Popover({ open, onOpenChange, children }: PopoverProps) {
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      {children}
+    </PopoverPrimitive.Root>
+  );
 }
 
 /* ---- Trigger ---- */
@@ -25,8 +24,12 @@ interface PopoverTriggerProps {
   children: React.ReactNode;
 }
 
-function PopoverTrigger({ children }: PopoverTriggerProps) {
-  return <PopoverButton as={React.Fragment}>{children}</PopoverButton>;
+function PopoverTrigger({ asChild = true, children }: PopoverTriggerProps) {
+  return (
+    <PopoverPrimitive.Trigger asChild={asChild}>
+      {children}
+    </PopoverPrimitive.Trigger>
+  );
 }
 
 /* ---- Content ---- */
@@ -36,27 +39,21 @@ interface PopoverContentProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentProps>(
-  ({ className, children, ...props }, ref) => (
-    <Transition
-      enter="transition ease-out duration-100"
-      enterFrom="opacity-0 scale-95"
-      enterTo="opacity-100 scale-100"
-      leave="transition ease-in duration-75"
-      leaveFrom="opacity-100 scale-100"
-      leaveTo="opacity-0 scale-95"
-    >
-      <PopoverPanel
+  ({ className, children, align = "start", sideOffset = 4, ...props }, ref) => (
+    <PopoverPrimitive.Portal>
+      <PopoverPrimitive.Content
         ref={ref}
-        anchor="bottom start"
+        align={align}
+        sideOffset={sideOffset}
         className={cn(
-          "z-50 mt-1 w-72 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-dropdown outline-none",
+          "z-50 w-72 rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-dropdown outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
           className
         )}
         {...props}
       >
         {children}
-      </PopoverPanel>
-    </Transition>
+      </PopoverPrimitive.Content>
+    </PopoverPrimitive.Portal>
   )
 );
 PopoverContent.displayName = "PopoverContent";
