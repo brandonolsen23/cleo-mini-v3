@@ -2407,15 +2407,17 @@ def parcels_cmd(show_status, harvest, municipality, dry_run, limit):
     """Harvest municipal parcel boundaries from ArcGIS REST services.
 
     Downloads parcel polygons and attributes for properties in covered
-    municipalities. Requires coordinates in properties.json.
+    municipalities. For services with an address layer configured (e.g. London),
+    harvests by address lookup first -- no coordinates required. Falls back to
+    coordinate bbox for services without an address layer.
 
     \b
     Examples:
         cleo parcels --status                          # Show harvest stats
         cleo parcels --harvest --dry-run               # Preview eligible properties
-        cleo parcels --harvest --municipality london    # Harvest London parcels
+        cleo parcels --harvest --municipality london    # Harvest London via address lookup
         cleo parcels --harvest                          # Harvest all municipalities
-        cleo parcels --harvest --limit 10               # Test with 10 properties
+        cleo parcels --harvest --limit 5               # Test with 5 properties
     """
     from cleo.parcels.harvester import harvest_parcels, harvest_status
 

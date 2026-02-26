@@ -122,6 +122,115 @@ def _find_containing_parcel(
     return None
 
 
+def _normalize_address_for_query(address: str) -> str:
+    """Normalize a property address for an ArcGIS LIKE query.
+
+    Uppercases, strips unit numbers (e.g. "Unit 2", "#3"), and abbreviates
+    common road suffixes to improve match rate against the city's address layer.
+    """
+    import re
+    addr = address.upper().strip()
+
+    # Strip unit prefixes: "UNIT 2", "#3", "APT 4B", etc.
+    addr = re.sub(r'\b(UNIT|APT|SUITE|STE|#)\s*[\w-]+\b', '', addr)
+
+    # Abbreviate common road suffixes
+    suffix_map = {
+        r'\bSTREET\b': 'ST',
+        r'\bAVENUE\b': 'AVE',
+        r'\bROAD\b': 'RD',
+        r'\bDRIVE\b': 'DR',
+        r'\bCOURT\b': 'CRT',
+        r'\bCRESCENT\b': 'CRES',
+        r'\bBOULEVARD\b': 'BLVD',
+        r'\bPLACE\b': 'PL',
+        r'\bLANE\b': 'LN',
+        r'\bTERRACE\b': 'TERR',
+        r'\bCIRCLE\b': 'CIR',
+        r'\bPARKWAY\b': 'PKY',
+    }
+    for pattern, abbr in suffix_map.items():
+        addr = re.sub(pattern, abbr, addr)
+
+    return addr.strip()
+
+
+def _harvest_by_address(
+    client: ArcGISClient,
+    svc,
+    pid: str,
+    prop: dict,
+    store,
+) -> Optional[dict]:
+    """Harvest a parcel by address lookup via the city's Address layer.
+
+    1. Normalize the property address for a LIKE query.
+    2. Query the Address layer to get Parcel_ID.
+    3. Query the Parcel layer by GIS_ID to get the polygon.
+    4. Return a feature dict ready for store.add_parcels(), or None on failure.
+    """
+    address = prop.get("address", "").strip()
+    if not address:
+        return None
+
+    normalized = _normalize_address_for_query(address)
+    where = f"{svc.address_field} LIKE '{normalized}%'"
+
+    addr_features = client.query_by_where(
+        svc.address_url,
+        where=where,
+        out_fields=f"{svc.address_field},{svc.parcel_link_field}",
+        return_geometry=False,
+    )
+
+    if not addr_features:
+        logger.debug("Address lookup found no results for %s (%s)", pid, normalized)
+        return None
+
+    parcel_id = addr_features[0].get("attributes", {}).get(svc.parcel_link_field)
+    if parcel_id is None:
+        return None
+
+    # Fetch the parcel polygon by GIS_ID
+    parcel_features = client.query_by_where(
+        svc.parcels_url,
+        where=f"{svc.parcel_gis_id_field} = {parcel_id}",
+        out_fields="*",
+        return_geometry=True,
+    )
+
+    if not parcel_features:
+        logger.debug("Parcel lookup found no polygon for %s (parcel_id=%s)", pid, parcel_id)
+        return None
+
+    best = parcel_features[0]
+    raw_attrs = best.get("attributes", {})
+    attrs = _extract_attributes(raw_attrs, svc.field_map)
+
+    geojson_geom = _arcgis_to_geojson(best.get("geometry", {}))
+    if geojson_geom is None:
+        return None
+
+    # Optionally query zoning using the address point from the Address layer
+    if svc.zoning_url:
+        addr_geom = addr_features[0].get("geometry")
+        if addr_geom and "x" in addr_geom and "y" in addr_geom:
+            # Address layer returns point in outSR=4326
+            pt_lng, pt_lat = addr_geom["x"], addr_geom["y"]
+            zone_attrs = client.query_zoning_at_point(
+                svc.zoning_url, pt_lat, pt_lng, 4326,
+            )
+            if zone_attrs:
+                zone_code_field = svc.field_map.get("zone_code")
+                zone_desc_field = svc.field_map.get("zone_desc")
+                if zone_code_field and zone_code_field in zone_attrs:
+                    attrs["zone_code"] = zone_attrs[zone_code_field]
+                if zone_desc_field and zone_desc_field in zone_attrs:
+                    attrs["zone_desc"] = zone_attrs[zone_desc_field]
+
+    return {"geometry": geojson_geom, "properties": attrs}
+
+
 def harvest_parcels(
     municipality: Optional[str] = None,
     dry_run: bool = False,
@@ -155,11 +264,6 @@ def harvest_parcels(
     no_coverage = 0
 
     for pid, prop in props.items():
-        lat, lng = prop.get("lat"), prop.get("lng")
-        if lat is None or lng is None:
-            no_coords += 1
-            continue
-
         city = prop.get("city", "")
         svc = registry.resolve(city)
         if svc is None:
@@ -168,6 +272,13 @@ def harvest_parcels(
 
         if municipality and svc.key != municipality:
             continue
+
+        lat, lng = prop.get("lat"), prop.get("lng")
+        # Include properties without coords if the service has address lookup
+        if lat is None or lng is None:
+            if not svc.has_address_lookup:
+                no_coords += 1
+                continue
 
         by_service.setdefault(svc.key, []).append((pid, prop))
 
@@ -220,53 +331,52 @@ def harvest_parcels(
                 if limit is not None and total_queried >= limit:
                     break
 
-                lat, lng = prop["lat"], prop["lng"]
+                lat, lng = prop.get("lat"), prop.get("lng")
+                feat: Optional[dict] = None
 
-                # Query parcel service
-                features = client.query_at_point(
-                    svc.parcels_url, lat, lng, svc.srid,
-                )
-                total_queried += 1
+                # Try address-based lookup first
+                if svc.has_address_lookup:
+                    feat = _harvest_by_address(client, svc, pid, prop, store)
+                    total_queried += 1
 
-                if not features:
-                    store.mark_no_coverage(pid)
-                    total_no_result += 1
-                    continue
-
-                # Find containing parcel
-                best = _find_containing_parcel(features, lat, lng)
-                if best is None:
-                    store.mark_no_coverage(pid)
-                    total_no_result += 1
-                    continue
-
-                # Extract attributes
-                raw_attrs = best.get("attributes", {})
-                attrs = _extract_attributes(raw_attrs, svc.field_map)
-
-                # Convert geometry
-                geojson_geom = _arcgis_to_geojson(best.get("geometry", {}))
-                if geojson_geom is None:
-                    store.mark_no_coverage(pid)
-                    total_no_result += 1
-                    continue
-
-                # Query zoning if available
-                if svc.zoning_url:
-                    zone_attrs = client.query_zoning_at_point(
-                        svc.zoning_url, lat, lng, svc.srid,
+                # Fall back to coordinate bbox if address lookup failed and coords exist
+                if feat is None and lat is not None and lng is not None:
+                    if svc.has_address_lookup:
+                        logger.debug("Address lookup failed for %s, falling back to coords", pid)
+                    features = client.query_at_point(
+                        svc.parcels_url, lat, lng, svc.srid,
                     )
-                    if zone_attrs:
-                        zone_code_field = svc.field_map.get("zone_code")
-                        zone_desc_field = svc.field_map.get("zone_desc")
-                        if zone_code_field and zone_code_field in zone_attrs:
-                            attrs["zone_code"] = zone_attrs[zone_code_field]
-                        if zone_desc_field and zone_desc_field in zone_attrs:
-                            attrs["zone_desc"] = zone_attrs[zone_desc_field]
+                    if not svc.has_address_lookup:
+                        total_queried += 1
+
+                    if features:
+                        best = _find_containing_parcel(features, lat, lng)
+                        if best is not None:
+                            raw_attrs = best.get("attributes", {})
+                            attrs = _extract_attributes(raw_attrs, svc.field_map)
+                            geojson_geom = _arcgis_to_geojson(best.get("geometry", {}))
+                            if geojson_geom:
+                                if svc.zoning_url:
+                                    zone_attrs = client.query_zoning_at_point(
+                                        svc.zoning_url, lat, lng, svc.srid,
+                                    )
+                                    if zone_attrs:
+                                        zone_code_field = svc.field_map.get("zone_code")
+                                        zone_desc_field = svc.field_map.get("zone_desc")
+                                        if zone_code_field and zone_code_field in zone_attrs:
+                                            attrs["zone_code"] = zone_attrs[zone_code_field]
+                                        if zone_desc_field and zone_desc_field in zone_attrs:
+                                            attrs["zone_desc"] = zone_attrs[zone_desc_field]
+                                feat = {"geometry": geojson_geom, "properties": attrs}
+
+                if feat is None:
+                    store.mark_no_coverage(pid)
+                    total_no_result += 1
+                    continue
 
                 batch_features.append({
-                    "geometry": geojson_geom,
-                    "properties": attrs,
+                    "geometry": feat["geometry"],
+                    "properties": feat["properties"],
                     "_prop_id": pid,
                 })
                 total_found += 1

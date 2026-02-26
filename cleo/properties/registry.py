@@ -12,6 +12,7 @@ from pathlib import Path
 
 from cleo.properties.normalize import (
     make_dedup_key,
+    make_loose_dedup_key,
     normalize_address_for_dedup,
     normalize_city_for_dedup,
 )
@@ -58,6 +59,7 @@ def build_registry(
     # Load existing registry if present
     existing: dict[str, dict] = {}
     key_to_pid: dict[str, str] = {}
+    pin_to_pid: dict[str, str] = {}  # PIN -> PID (from GW-sourced properties)
     if existing_registry_path and existing_registry_path.exists():
         data = json.loads(existing_registry_path.read_text(encoding="utf-8"))
         existing = data.get("properties", {})
@@ -65,11 +67,16 @@ def build_registry(
         for pid, prop in existing.items():
             key = make_dedup_key(prop.get("address", ""), prop.get("city", ""))
             key_to_pid[key] = pid
+            # Build PIN -> PID lookup from GW data
+            pin = prop.get("gw_data", {}).get("pin")
+            if pin:
+                pin_to_pid[str(pin)] = pid
 
     # Scan all parsed JSON files
     scanned: dict[str, dict] = {}  # dedup_key -> {address, city, municipality, province, rt_ids}
     # Track physical property facts per RT ID for later backfill
     rt_facts: dict[str, dict] = {}  # rt_id -> {building_sf, site_area, sale_date_iso}
+    rt_id_to_pins: dict[str, list[str]] = {}  # rt_id -> list of PINs from parsed transaction
 
     for f in sorted(parsed_dir.glob("*.json")):
         if f.stem == "_meta":
@@ -88,6 +95,11 @@ def build_registry(
                 "site_area": site_area,
                 "sale_date_iso": tx.get("sale_date_iso", ""),
             }
+
+        # Collect PINs for PIN-based merge phase
+        pins = tx.get("pins", [])
+        if pins:
+            rt_id_to_pins[rt_id] = [str(p) for p in pins]
 
         address = addr.get("address", "").strip()
         city = addr.get("city", "").strip()
@@ -135,6 +147,52 @@ def build_registry(
                         if rt_id not in scanned[exp_key]["rt_ids"]:
                             scanned[exp_key]["rt_ids"].append(rt_id)
                             expanded_merges += 1
+
+    # Phase 3: PIN-based merge.
+    # For scanned keys with no direct address match, check if any of their
+    # RT IDs have PINs that match a GW-sourced property. If so, fold the
+    # RT IDs into that property's scanned entry so all information ends up
+    # on one record (e.g. Food Basics at 975 Wallace Ave / N. Perth -> P12756).
+    pin_merges = 0
+    directional_merges = 0
+    keys_to_delete: list[str] = []
+    for key, info in list(scanned.items()):
+        addr_pid = key_to_pid.get(key)  # PID this key maps to via address match
+
+        for rt_id in list(info["rt_ids"]):
+            pins = rt_id_to_pins.get(rt_id, [])
+            for pin in pins:
+                matched_pid = pin_to_pid.get(pin)
+                if matched_pid is None:
+                    continue
+                if matched_pid == addr_pid:
+                    continue  # Address and PIN agree — no conflict
+                # PIN match points to a different property than address match.
+                # PIN wins — route this rt_id into the PIN-matched property.
+                matched_prop = existing[matched_pid]
+                matched_key = make_dedup_key(
+                    matched_prop.get("address", ""), matched_prop.get("city", "")
+                )
+                if matched_key not in scanned:
+                    scanned[matched_key] = {
+                        "address": matched_prop["address"],
+                        "city": matched_prop["city"],
+                        "municipality": matched_prop.get("municipality", ""),
+                        "province": matched_prop.get("province", "Ontario"),
+                        "rt_ids": [],
+                    }
+                if rt_id not in scanned[matched_key]["rt_ids"]:
+                    scanned[matched_key]["rt_ids"].append(rt_id)
+                    pin_merges += 1
+                info["rt_ids"].remove(rt_id)
+                break  # PIN matched — move on to next rt_id
+
+        if not info["rt_ids"] and addr_pid is None:
+            # Only remove if this key had no independent address-based match
+            keys_to_delete.append(key)
+
+    for key in keys_to_delete:
+        del scanned[key]
 
     # Merge: update existing entries, add new ones
     used_ids = set(existing.keys())
@@ -207,28 +265,34 @@ def build_registry(
 
     # Preserve existing entries not found in scan (e.g. manually added, brand sources).
     # But first check if they would now merge with an already-claimed property
-    # under the enhanced normalization.
+    # under the enhanced normalization (exact key) or under loose directional
+    # matching (one side has a trailing directional the other omits).
     for pid, prop in existing.items():
         if pid in properties:
             continue
         key = make_dedup_key(prop.get("address", ""), prop.get("city", ""))
-        # See if another property already covers this key
+        loose = make_loose_dedup_key(prop.get("address", ""), prop.get("city", ""))
         merged = False
-        for existing_pid, existing_prop in properties.items():
-            existing_key = make_dedup_key(
-                existing_prop.get("address", ""), existing_prop.get("city", "")
-            )
-            if existing_key == key:
-                # Merge RT IDs from the old entry into the surviving one
+        for epid, eprop in properties.items():
+            ekey = make_dedup_key(eprop.get("address", ""), eprop.get("city", ""))
+            eloose = make_loose_dedup_key(eprop.get("address", ""), eprop.get("city", ""))
+            # Exact match, OR exactly one side has a trailing directional the
+            # other omits (loose == ekey means *this* prop has the directional;
+            # key == eloose means the *existing* prop has the directional).
+            # We deliberately avoid matching NORTH↔SOUTH etc. (loose==eloose but
+            # neither matches the other's exact key).
+            if ekey == key or loose == ekey or key == eloose:
+                # Merge RT IDs and sources into the surviving entry
                 old_rt_ids = set(prop.get("rt_ids", []))
-                new_rt_ids = set(existing_prop.get("rt_ids", []))
+                new_rt_ids = set(eprop.get("rt_ids", []))
                 combined = sorted(old_rt_ids | new_rt_ids)
-                existing_prop["rt_ids"] = combined
-                existing_prop["transaction_count"] = len(combined)
-                # Preserve sources
+                eprop["rt_ids"] = combined
+                eprop["transaction_count"] = len(combined)
                 old_sources = set(prop.get("sources", []))
-                new_sources = set(existing_prop.get("sources", []))
-                existing_prop["sources"] = sorted(old_sources | new_sources)
+                new_sources = set(eprop.get("sources", []))
+                eprop["sources"] = sorted(old_sources | new_sources)
+                if ekey != key:
+                    directional_merges += 1
                 merged = True
                 break
         if not merged:
@@ -275,6 +339,10 @@ def build_registry(
     }
     if expanded_merges:
         meta["expanded_address_merges"] = expanded_merges
+    if pin_merges:
+        meta["pin_merges"] = pin_merges
+    if directional_merges:
+        meta["directional_merges"] = directional_merges
 
     return {"properties": properties, "meta": meta}
 

@@ -942,8 +942,13 @@ def api_properties():
         return JSONResponse(_properties_cache)
 
     from cleo.properties.registry import load_registry
+    from cleo.parcels.store import ParcelStore
     reg = load_registry(PROPERTIES_PATH)
     props = reg.get("properties", {})
+
+    # Load parcel property mapping for parcel_id lookup
+    parcel_store = ParcelStore()
+    prop_to_parcel: dict[str, str] = parcel_store.property_to_parcel
 
     # Scan parsed files for photos, dates, and prices per RT ID
     act = active_dir()
@@ -1048,6 +1053,8 @@ def api_properties():
             "has_gw_data": bool(prop.get("gw_ids")),
             "pipeline_status": pipeline_status,
             "pin_status": pin_status,
+            "parcel_id": prop_to_parcel.get(pid),
+            "parcel_group_size": len(prop.get("parcel_group", [])) + 1,
             "_search_text": prop_search_text,
         })
 

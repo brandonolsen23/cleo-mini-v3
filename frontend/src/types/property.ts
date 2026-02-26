@@ -27,6 +27,8 @@ export interface PropertySummary {
   has_gw_data: boolean;
   pipeline_status: string;
   pin_status: string;
+  parcel_id: string | null;
+  parcel_group_size: number;
   _search_text: string;
 }
 

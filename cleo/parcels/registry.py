@@ -28,6 +28,15 @@ class ServiceConfig:
         self.field_map: dict = data.get("field_map", {})
         self.cities: list[str] = data.get("cities", [])
         self.notes: str = data.get("notes", "")
+        self.address_url: Optional[str] = data.get("address_url")
+        self.address_field: Optional[str] = data.get("address_field")
+        self.parcel_link_field: Optional[str] = data.get("parcel_link_field")
+        self.parcel_gis_id_field: Optional[str] = data.get("parcel_gis_id_field")
+
+    @property
+    def has_address_lookup(self) -> bool:
+        """True if this service has an address layer configured for attribute-based harvest."""
+        return bool(self.address_url and self.address_field and self.parcel_link_field and self.parcel_gis_id_field)
 
     def __repr__(self) -> str:
         return f"ServiceConfig({self.key!r}, cities={self.cities})"

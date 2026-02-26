@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import type { PropertySummary } from "../../types/property";
 import { usePropertyOutreach, logContact } from "../../api/outreach";
@@ -15,6 +15,12 @@ import BrandBadge from "../shared/BrandBadge";
 import MapLink from "../shared/MapLink";
 import { Button } from "@/components/ui/button";
 
+interface ParcelDetail {
+  parcel_id: string | null;
+  parcel_group: string[];
+  parcel_brands: string[];
+}
+
 interface Props {
   property: PropertySummary;
   onClose: () => void;
@@ -22,6 +28,16 @@ interface Props {
 
 export default function PropertyPopup({ property, onClose }: Props) {
   const { data: outreach, loading: outreachLoading, reload } = usePropertyOutreach(property.prop_id);
+  const [parcelDetail, setParcelDetail] = useState<ParcelDetail | null>(null);
+
+  useEffect(() => {
+    if ((property.parcel_group_size ?? 1) > 1) {
+      fetch(`/api/properties/${property.prop_id}/parcel`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => data && setParcelDetail(data))
+        .catch(() => {});
+    }
+  }, [property.prop_id, property.parcel_group_size]);
 
   const [showLogForm, setShowLogForm] = useState(false);
   const [logMethod, setLogMethod] = useState<ContactMethod>("mail");
@@ -97,6 +113,33 @@ export default function PropertyPopup({ property, onClose }: Props) {
           </div>
         )}
       </div>
+
+      {/* Parcel group info */}
+      {parcelDetail && parcelDetail.parcel_group.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-border space-y-1">
+          <p className="text-[10px] font-semibold text-amber-600 uppercase tracking-wider">
+            Part of {parcelDetail.parcel_group.length + 1}-property parcel
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {parcelDetail.parcel_group.map((sibId) => (
+              <Link
+                key={sibId}
+                to={`/properties/${sibId}`}
+                className="text-[10px] text-muted-foreground hover:text-foreground underline"
+              >
+                {sibId}
+              </Link>
+            ))}
+          </div>
+          {parcelDetail.parcel_brands.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {parcelDetail.parcel_brands.map((b) => (
+                <BrandBadge key={b} brand={b} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Pipeline / deal status */}
       <div className="flex items-center justify-between mt-2 pt-2 border-t border-border">

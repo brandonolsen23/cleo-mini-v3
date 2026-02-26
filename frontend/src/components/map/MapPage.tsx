@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import MapGL, { Source, Layer, Popup } from "react-map-gl/mapbox";
 import type { MapRef, MapMouseEvent } from "react-map-gl/mapbox";
 import type { LayerProps } from "react-map-gl/mapbox";
@@ -11,7 +11,7 @@ import type { PropertySummary } from "../../types/property";
 import PropertyPopup from "./PropertyPopup";
 import MultiSelect from "../shared/MultiSelect";
 import type { MultiSelectOption } from "../shared/MultiSelect";
-import { BRAND_CATEGORY, CATEGORY_COLORS, CATEGORY_LABELS, type Category } from "../shared/BrandBadge";
+import BrandBadge, { BRAND_CATEGORY, CATEGORY_COLORS, CATEGORY_LABELS, type Category } from "../shared/BrandBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -96,6 +96,22 @@ const unclusteredPointLayer: LayerProps = {
   },
 };
 
+const parcelGroupRingLayer: LayerProps = {
+  id: "parcel-group-ring",
+  type: "circle",
+  source: "properties",
+  filter: ["all",
+    ["!", ["has", "point_count"]],
+    [">", ["get", "parcel_group_size"], 1],
+  ],
+  paint: {
+    "circle-radius": 12,
+    "circle-color": "transparent",
+    "circle-stroke-width": 2,
+    "circle-stroke-color": "#d97706", // amber-600, matches parcel boundary colour
+  },
+};
+
 const footprintFillLayer: LayerProps = {
   id: "footprint-fill",
   type: "fill",
@@ -169,6 +185,15 @@ export default function MapPage() {
   const { data: properties, loading, error } = useProperties();
   const mapRef = useRef<MapRef>(null);
   const [selected, setSelected] = useState<PropertySummary | null>(null);
+  const [parcelPopup, setParcelPopup] = useState<{
+    lng: number;
+    lat: number;
+    parcel_id: string | null;
+    municipality: string;
+    area_sqm: number | null;
+    properties: string[];
+    brands: string[];
+  } | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
   const savedView = useRef(getSavedView());
@@ -401,7 +426,12 @@ export default function MapPage() {
       features: filtered.map((p) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: [p.lng!, p.lat!] },
-        properties: { prop_id: p.prop_id, pin_status: p.pin_status || "not_started" },
+        properties: {
+          prop_id: p.prop_id,
+          pin_status: p.pin_status || "not_started",
+          parcel_id: p.parcel_id ?? null,
+          parcel_group_size: p.parcel_group_size ?? 1,
+        },
       })),
     }),
     [filtered]
@@ -450,14 +480,51 @@ export default function MapPage() {
         return;
       }
 
-      // Check unclustered points
+      // Check unclustered points (takes priority over parcel polygons)
       const pointFeatures = map.queryRenderedFeatures(e.point, {
         layers: ["unclustered-point"],
       });
       if (pointFeatures.length > 0) {
         const propId = pointFeatures[0].properties?.prop_id;
         const prop = propById[propId];
-        if (prop) setSelected(prop);
+        if (prop) {
+          setParcelPopup(null);
+          setSelected(prop);
+        }
+        return;
+      }
+
+      // Check parcel polygon clicks
+      const parcelFeatures = map.queryRenderedFeatures(e.point, {
+        layers: ["parcel-fill"],
+      });
+      if (parcelFeatures.length > 0) {
+        const props = parcelFeatures[0].properties ?? {};
+        const pcl_id = props.pcl_id as string | undefined;
+
+        // Find any property mapped to this parcel to fetch group details
+        const matchedProp = Object.values(propById).find(
+          (p) => p.parcel_id === pcl_id
+        );
+
+        if (matchedProp) {
+          fetch(`/api/properties/${matchedProp.prop_id}/parcel`)
+            .then((r) => r.ok ? r.json() : null)
+            .then((data) => {
+              if (!data) return;
+              setSelected(null);
+              setParcelPopup({
+                lng: e.lngLat.lng,
+                lat: e.lngLat.lat,
+                parcel_id: data.parcel_id,
+                municipality: data.municipality,
+                area_sqm: props.area_sqm ?? null,
+                properties: [matchedProp.prop_id, ...(data.parcel_group ?? [])],
+                brands: data.parcel_brands ?? [],
+              });
+            })
+            .catch(() => {});
+        }
       }
     },
     [propById]
@@ -744,7 +811,7 @@ export default function MapPage() {
             if (mapRef.current) fetchParcels(mapRef.current);
           }, 300);
         }}
-        interactiveLayerIds={["clusters", "unclustered-point"]}
+        interactiveLayerIds={["clusters", "unclustered-point", "parcel-fill"]}
         cursor="pointer"
       >
         <Source
@@ -758,6 +825,7 @@ export default function MapPage() {
           <Layer {...clusterLayer} />
           <Layer {...clusterCountLayer} />
           <Layer {...unclusteredPointLayer} />
+          <Layer {...parcelGroupRingLayer} />
         </Source>
 
         {showFootprints && (
@@ -788,6 +856,68 @@ export default function MapPage() {
               property={selected}
               onClose={() => setSelected(null)}
             />
+          </Popup>
+        )}
+
+        {parcelPopup && (
+          <Popup
+            latitude={parcelPopup.lat}
+            longitude={parcelPopup.lng}
+            onClose={() => setParcelPopup(null)}
+            closeButton={false}
+            closeOnClick={false}
+            maxWidth="260px"
+            offset={8}
+          >
+            <div className="min-w-[200px]">
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div>
+                  <p className="text-xs font-semibold text-foreground">
+                    {parcelPopup.parcel_id ?? "Parcel"}
+                  </p>
+                  {parcelPopup.municipality && (
+                    <p className="text-[10px] text-muted-foreground capitalize">{parcelPopup.municipality}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setParcelPopup(null)}
+                  className="text-muted-foreground hover:text-foreground text-lg leading-none -mt-0.5"
+                >
+                  &times;
+                </button>
+              </div>
+              {parcelPopup.area_sqm && (
+                <p className="text-[10px] text-muted-foreground mb-2">
+                  {(parcelPopup.area_sqm / 4047).toFixed(2)} ac &middot; {parcelPopup.area_sqm.toLocaleString()} m²
+                </p>
+              )}
+              {parcelPopup.properties.length > 0 && (
+                <div className="mb-2">
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+                    Properties ({parcelPopup.properties.length})
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {parcelPopup.properties.map((pid) => (
+                      <Link
+                        key={pid}
+                        to={`/properties/${pid}`}
+                        className="text-[10px] text-muted-foreground hover:text-foreground underline"
+                        onClick={() => setParcelPopup(null)}
+                      >
+                        {pid}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {parcelPopup.brands.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {parcelPopup.brands.map((b) => (
+                    <BrandBadge key={b} brand={b} />
+                  ))}
+                </div>
+              )}
+            </div>
           </Popup>
         )}
       </MapGL>
