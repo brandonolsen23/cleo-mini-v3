@@ -1,4 +1,16 @@
-"""Extraction engine: reads parsed JSON and produces geocodable address expansions."""
+"""Extraction engine: reads parsed JSON and produces geocodable address expansions.
+
+DEPRECATED: This module is superseded by the normalize + expand pipeline:
+  - cleo/normalize/engine.py + cleo/normalize/address.py (normalization)
+  - cleo/expand/engine.py + cleo/expand/expander.py (compound splitting)
+
+The normalize + expand pipeline handles all three sources (RT, brands, GW),
+produces decomposed address fields, and uses the official municipality list.
+This legacy extract module reads only from parsed/ and produces flat expansions.
+
+Kept for backward compatibility with existing data/extracted/ versions and
+the /review/extract UI. Do not build new features on top of this module.
+"""
 
 import json
 import logging

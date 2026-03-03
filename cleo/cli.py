@@ -278,7 +278,7 @@ def parse_cmd(action: str, rollback_version: str, force: bool):
             click.echo(f"Error: {e}", err=True)
             raise SystemExit(1)
         # Clear sandbox_accepted flags — sandbox is now active
-        _clear_sandbox_accepted()
+        _clear_sandbox_accepted(DATA_DIR / "reviews.json")
         click.echo(f"Promoted to {version}")
 
     elif action == "discard":
@@ -296,6 +296,534 @@ def parse_cmd(action: str, rollback_version: str, force: bool):
         click.echo(f"Active → {rollback_version}")
 
 
+@main.command(name="normalize")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Normalize parsed addresses → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare normalization sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote normalization sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete normalization sandbox.")
+@click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
+@click.option("--status", "action", flag_value="status", help="Show normalization version info.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+def normalize_cmd(action: str, rollback_version: str, force: bool):
+    """Manage normalized address data with versioned snapshots.
+
+    Reads parsed JSON from parsed/active, normalizes property/seller/buyer
+    addresses and cities, and writes to normalized/sandbox. Then diff,
+    promote, or discard.
+    """
+    from cleo.normalize import versioning as norm_ver
+    from cleo.normalize.engine import normalize_all
+    from cleo.config import NORM_REVIEWS_PATH
+
+    store = norm_ver.store
+
+    if rollback_version:
+        action = "rollback"
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        has_sandbox = store.sandbox_path().is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+
+    elif action == "sandbox":
+        if store.sandbox_path().is_dir():
+            click.echo("Sandbox already exists. Use --discard first.", err=True)
+            raise SystemExit(1)
+
+        # Need parsed/active as source
+        parse_active = active_dir()
+        if parse_active is None:
+            click.echo("No active parse version. Run 'cleo parse --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+
+        sb = store.ensure_sandbox()
+        source_ver = active_version() or ""
+        click.echo(f"Normalizing addresses from {parse_active.name} → {sb}\n")
+
+        from cleo.config import GW_PARSED_DIR, BRANDS_DATA_DIR, NORMALIZE_SKIP_BRANDS
+
+        summary = normalize_all(
+            source_dir=parse_active,
+            output_dir=sb,
+            source_version=source_ver,
+            brands_dir=BRANDS_DATA_DIR,
+            gw_dir=GW_PARSED_DIR,
+            skip_brand_files=NORMALIZE_SKIP_BRANDS,
+        )
+        click.echo(
+            f"\nDone: {summary['normalized']:,} normalized, "
+            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
+        )
+        if summary.get("by_source"):
+            click.echo(f"\nBy source:")
+            for src, count in sorted(summary["by_source"].items()):
+                click.echo(f"  {src:<20s}  {count:>7,}")
+        if summary["categories"]:
+            click.echo(f"\nProperty address categories:")
+            for cat, count in summary["categories"].items():
+                click.echo(f"  {cat:<25s}  {count:>7,}")
+        if summary["error_ids"]:
+            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
+            if len(summary["error_ids"]) > 10:
+                click.echo(f"  ... and {len(summary['error_ids']) - 10} more")
+
+    elif action == "diff":
+        try:
+            diff_result = store.diff_sandbox_vs_active()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(format_diff_report(diff_result))
+
+    elif action == "promote":
+        if store.active_dir() and store.sandbox_path().is_dir() and not force:
+            try:
+                diff_result = store.diff_sandbox_vs_active()
+                regressions = diff_result.get("regressions", [])
+                if regressions:
+                    click.echo(f"\nBLOCKED: {len(regressions)} reviewed-Clean record(s) would change:\n")
+                    for r in regressions[:10]:
+                        fields = ", ".join(r["changed_fields"][:5])
+                        click.echo(f"  {r['rt_id']}  →  {fields}")
+                    if len(regressions) > 10:
+                        click.echo(f"  ... and {len(regressions) - 10} more")
+                    click.echo(f"\nUpdate reviews or use --force to override.")
+                    raise SystemExit(1)
+            except FileNotFoundError:
+                pass  # No active to diff against — first promote is fine
+        try:
+            version = store.promote()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        _clear_sandbox_accepted(NORM_REVIEWS_PATH)
+        click.echo(f"Promoted to {version}")
+
+    elif action == "discard":
+        if store.discard_sandbox():
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+    elif action == "rollback":
+        try:
+            store.rollback(rollback_version)
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(f"Active → {rollback_version}")
+
+
+@main.command(name="expand")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Expand normalized addresses → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare expansion sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote expansion sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete expansion sandbox.")
+@click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
+@click.option("--status", "action", flag_value="status", help="Show expansion version info.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+def expand_cmd(action: str, rollback_version: str, force: bool):
+    """Manage expanded address data with versioned snapshots.
+
+    Reads normalized JSON from normalized/active, splits compound street numbers
+    into individual addresses, and writes to expanded/sandbox. Then diff, promote, or discard.
+    """
+    from cleo.expand import versioning as expand_ver
+    from cleo.expand.engine import expand_all
+    from cleo.config import NORMALIZED_DIR, EXPAND_REVIEWS_PATH
+
+    store = expand_ver.store
+
+    if rollback_version:
+        action = "rollback"
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        has_sandbox = store.sandbox_path().is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+
+    elif action == "sandbox":
+        if store.sandbox_path().is_dir():
+            click.echo("Sandbox already exists. Use --discard first.", err=True)
+            raise SystemExit(1)
+
+        norm_active = NORMALIZED_DIR / "active"
+        if not norm_active.exists():
+            click.echo("No active normalized version. Run 'cleo normalize --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+
+        # Determine normalize version from symlink
+        norm_ver_name = norm_active.resolve().name if norm_active.is_symlink() else ""
+
+        sb = store.ensure_sandbox()
+        click.echo(f"Expanding addresses from {norm_ver_name} → {sb}\n")
+
+        summary = expand_all(
+            source_dir=norm_active,
+            output_dir=sb,
+            source_version=norm_ver_name,
+        )
+        click.echo(
+            f"\nDone: {summary['expanded']:,} expanded, "
+            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
+        )
+        if summary.get("by_source"):
+            click.echo(f"\nBy source:")
+            for src, count in sorted(summary["by_source"].items()):
+                click.echo(f"  {src:<20s}  {count:>7,}")
+        if summary["error_ids"]:
+            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
+
+    elif action == "diff":
+        try:
+            diff_result = store.diff_sandbox_vs_active()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(format_diff_report(diff_result))
+
+    elif action == "promote":
+        if store.active_dir() and store.sandbox_path().is_dir() and not force:
+            try:
+                diff_result = store.diff_sandbox_vs_active()
+                regressions = diff_result.get("regressions", [])
+                if regressions:
+                    click.echo(f"\nBLOCKED: {len(regressions)} reviewed-Clean record(s) would change:\n")
+                    for r in regressions[:10]:
+                        fields = ", ".join(r["changed_fields"][:5])
+                        click.echo(f"  {r['rt_id']}  →  {fields}")
+                    if len(regressions) > 10:
+                        click.echo(f"  ... and {len(regressions) - 10} more")
+                    click.echo(f"\nUpdate reviews or use --force to override.")
+                    raise SystemExit(1)
+            except FileNotFoundError:
+                pass
+        try:
+            version = store.promote()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        # Clear sandbox_accepted flags
+        _clear_sandbox_accepted(EXPAND_REVIEWS_PATH)
+        click.echo(f"Promoted to {version}")
+
+    elif action == "discard":
+        if store.discard_sandbox():
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+    elif action == "rollback":
+        try:
+            store.rollback(rollback_version)
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(f"Active → {rollback_version}")
+
+
+@main.command(name="parcelled")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Resolve parcels for all records → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare parcelled sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote parcelled sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete parcelled sandbox.")
+@click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
+@click.option("--status", "action", flag_value="status", help="Show parcelled version info.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+@click.option("--skip-api", is_flag=True, help="Cache-only mode (no provincial API queries).")
+def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: bool):
+    """Resolve parcels for all source records using ARN/PIN/coords.
+
+    Reads expanded (addresses), parsed (RT ARNs/PINs), gw_parsed (GW ARNs/PINs),
+    and coordinates — resolves each record to a parcel via the parcel cache
+    or provincial API.
+
+    Resolution priority: ARN direct > PIN bridge > spatial (coords) > none.
+
+    Examples:
+        cleo parcelled --sandbox             # Resolve parcels (cache + API)
+        cleo parcelled --sandbox --skip-api  # Cache-only (fast, no token needed)
+        cleo parcelled --diff                # Compare sandbox vs active
+        cleo parcelled --promote             # Promote sandbox → next version
+        cleo parcelled --status              # Show version info
+    """
+    from cleo.parcelled import versioning as parcelled_ver
+    from cleo.parcelled.engine import resolve_all
+    from cleo.config import (
+        EXPANDED_DIR, PARSED_DIR, GW_PARSED_DIR,
+        COORDINATES_PATH, PARCELLED_REVIEWS_PATH,
+    )
+
+    store = parcelled_ver.store
+
+    if rollback_version:
+        action = "rollback"
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        has_sandbox = store.sandbox_path().is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+
+    elif action == "sandbox":
+        if store.sandbox_path().is_dir():
+            click.echo("Sandbox already exists. Use --discard first.", err=True)
+            raise SystemExit(1)
+
+        expanded_active = EXPANDED_DIR / "active"
+        if not expanded_active.exists():
+            click.echo("No active expanded version. Run 'cleo expand --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+
+        parsed_active = PARSED_DIR / "active"
+        gw_parsed_active = GW_PARSED_DIR / "active"
+        if not gw_parsed_active.exists():
+            # Fall back to v001 if no active symlink
+            gw_parsed_active = GW_PARSED_DIR / "v001"
+
+        expanded_ver = expanded_active.resolve().name if expanded_active.is_symlink() else ""
+
+        sb = store.ensure_sandbox()
+        mode = "cache-only" if skip_api else "cache + provincial API"
+        click.echo(f"Resolving parcels from expanded/{expanded_ver} → {sb}")
+        click.echo(f"Mode: {mode}\n")
+
+        summary = resolve_all(
+            expanded_dir=expanded_active,
+            parsed_dir=parsed_active,
+            gw_parsed_dir=gw_parsed_active,
+            coordinates_path=COORDINATES_PATH,
+            output_dir=sb,
+            source_version=expanded_ver,
+            skip_api=skip_api,
+        )
+        click.echo(
+            f"\nDone: {summary['resolved']:,} resolved, "
+            f"{summary['unresolved']:,} unresolved, "
+            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
+        )
+        if summary.get("by_method"):
+            click.echo(f"\nBy resolution method:")
+            for method, count in sorted(summary["by_method"].items(), key=lambda x: -x[1]):
+                pct = count / summary["total"] * 100 if summary["total"] else 0
+                click.echo(f"  {method:<20s}  {count:>7,}  ({pct:.1f}%)")
+        if summary.get("by_source"):
+            click.echo(f"\nBy source:")
+            for src, count in sorted(summary["by_source"].items()):
+                click.echo(f"  {src:<20s}  {count:>7,}")
+        rs = summary.get("resolver_stats", {})
+        if rs:
+            click.echo(f"\nResolver: {rs.get('cache_hits', 0):,} cache hits, "
+                        f"{rs.get('api_hits', 0):,} API hits, "
+                        f"{rs.get('api_misses', 0):,} API misses, "
+                        f"{rs.get('api_errors', 0):,} API errors")
+            click.echo(f"Cache total: {rs.get('cache_total', 0):,} parcels")
+        if summary.get("token_refreshes", 0) > 0:
+            click.echo(f"Token refreshes: {summary['token_refreshes']}")
+        if summary["error_ids"]:
+            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
+
+    elif action == "diff":
+        try:
+            diff_result = store.diff_sandbox_vs_active()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(format_diff_report(diff_result))
+
+    elif action == "promote":
+        if store.active_dir() and store.sandbox_path().is_dir() and not force:
+            try:
+                diff_result = store.diff_sandbox_vs_active()
+                regressions = diff_result.get("regressions", [])
+                if regressions:
+                    click.echo(f"\nBLOCKED: {len(regressions)} reviewed-Clean record(s) would change:\n")
+                    for r in regressions[:10]:
+                        fields = ", ".join(r["changed_fields"][:5])
+                        click.echo(f"  {r['rt_id']}  →  {fields}")
+                    if len(regressions) > 10:
+                        click.echo(f"  ... and {len(regressions) - 10} more")
+                    click.echo(f"\nUpdate reviews or use --force to override.")
+                    raise SystemExit(1)
+            except FileNotFoundError:
+                pass
+        try:
+            version = store.promote()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        _clear_sandbox_accepted(PARCELLED_REVIEWS_PATH)
+        click.echo(f"Promoted to {version}")
+
+    elif action == "discard":
+        if store.discard_sandbox():
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+    elif action == "rollback":
+        try:
+            store.rollback(rollback_version)
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(f"Active → {rollback_version}")
+
+
+@main.command(name="compile")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Compile all records → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare compiled sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote compiled sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete compiled sandbox.")
+@click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
+@click.option("--status", "action", flag_value="status", help="Show compiled version info.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+def compile_cmd(action: str, rollback_version: str, force: bool):
+    """Compile complete records from all pipeline stages.
+
+    Reads parsed (bypass fields), expanded (addresses), coordinates (geocode),
+    and parcels — assembles one compiled JSON per source record.
+
+    Examples:
+        cleo compile --sandbox     # Compile all records → sandbox
+        cleo compile --diff        # Compare sandbox vs active
+        cleo compile --promote     # Promote sandbox → next version
+        cleo compile --status      # Show version info
+    """
+    from cleo.compiled import versioning as compiled_ver
+    from cleo.compiled.engine import compile_all
+    from cleo.config import (
+        PARSED_DIR, EXPANDED_DIR, COORDINATES_PATH,
+        PROPERTY_PARCEL_INDEX_PATH, PARCELS_PATH, COMPILED_REVIEWS_PATH,
+    )
+
+    store = compiled_ver.store
+
+    if rollback_version:
+        action = "rollback"
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        has_sandbox = store.sandbox_path().is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+
+    elif action == "sandbox":
+        if store.sandbox_path().is_dir():
+            click.echo("Sandbox already exists. Use --discard first.", err=True)
+            raise SystemExit(1)
+
+        parsed_active = PARSED_DIR / "active"
+        expanded_active = EXPANDED_DIR / "active"
+
+        if not parsed_active.exists():
+            click.echo("No active parsed version. Run 'cleo parse --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+        if not expanded_active.exists():
+            click.echo("No active expanded version. Run 'cleo expand --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+
+        sb = store.ensure_sandbox()
+
+        parsed_ver = parsed_active.resolve().name if parsed_active.is_symlink() else ""
+        expanded_ver = expanded_active.resolve().name if expanded_active.is_symlink() else ""
+        click.echo(f"Compiling records from parsed/{parsed_ver} + expanded/{expanded_ver} → {sb}\n")
+
+        summary = compile_all(
+            parsed_dir=parsed_active,
+            expanded_dir=expanded_active,
+            coordinates_path=COORDINATES_PATH,
+            parcel_index_path=PROPERTY_PARCEL_INDEX_PATH,
+            parcels_path=PARCELS_PATH,
+            output_dir=sb,
+        )
+        click.echo(
+            f"\nDone: {summary['compiled']:,} compiled, "
+            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
+        )
+        if summary.get("by_source"):
+            click.echo(f"\nBy source:")
+            for src, count in sorted(summary["by_source"].items()):
+                click.echo(f"  {src:<20s}  {count:>7,}")
+        if summary.get("source_versions"):
+            sv = summary["source_versions"]
+            click.echo(f"\nSource versions: parsed={sv.get('parsed', '?')}  expanded={sv.get('expanded', '?')}")
+        if summary["error_ids"]:
+            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
+
+    elif action == "diff":
+        try:
+            diff_result = store.diff_sandbox_vs_active()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(format_diff_report(diff_result))
+
+    elif action == "promote":
+        if store.active_dir() and store.sandbox_path().is_dir() and not force:
+            try:
+                diff_result = store.diff_sandbox_vs_active()
+                regressions = diff_result.get("regressions", [])
+                if regressions:
+                    click.echo(f"\nBLOCKED: {len(regressions)} reviewed-Clean record(s) would change:\n")
+                    for r in regressions[:10]:
+                        fields = ", ".join(r["changed_fields"][:5])
+                        click.echo(f"  {r['rt_id']}  →  {fields}")
+                    if len(regressions) > 10:
+                        click.echo(f"  ... and {len(regressions) - 10} more")
+                    click.echo(f"\nUpdate reviews or use --force to override.")
+                    raise SystemExit(1)
+            except FileNotFoundError:
+                pass
+        try:
+            version = store.promote()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        _clear_sandbox_accepted(COMPILED_REVIEWS_PATH)
+        click.echo(f"Promoted to {version}")
+
+    elif action == "discard":
+        if store.discard_sandbox():
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+    elif action == "rollback":
+        try:
+            store.rollback(rollback_version)
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(f"Active → {rollback_version}")
+
+
 @main.command(name="extract")
 @click.option("--sandbox", "action", flag_value="sandbox", help="Extract parsed addresses → sandbox.")
 @click.option("--diff", "action", flag_value="diff", help="Compare extraction sandbox vs active.")
@@ -305,12 +833,19 @@ def parse_cmd(action: str, rollback_version: str, force: bool):
 @click.option("--status", "action", flag_value="status", help="Show extraction version info.")
 @click.option("--force", is_flag=True, help="Force promote even with regressions.")
 def extract_cmd(action: str, rollback_version: str, force: bool):
-    """Manage extracted address data with versioned snapshots.
+    """(Legacy) Manage extracted address data with versioned snapshots.
 
-    Reads parsed JSON from parsed/active, expands compound addresses into
-    geocodable variations, and writes to extracted/sandbox. Then diff,
-    promote, or discard.
+    DEPRECATED: This stage is superseded by 'cleo normalize' + 'cleo expand'.
+    Use those commands instead. This command is kept for backward compatibility
+    with existing extracted/ data and review endpoints.
     """
+    from cleo.config import EXTRACT_REVIEWS_PATH
+
+    click.echo(
+        "WARNING: 'cleo extract' is deprecated. "
+        "Use 'cleo normalize' + 'cleo expand' instead.",
+        err=True,
+    )
     store = extract_ver.store
 
     if rollback_version:
@@ -387,7 +922,7 @@ def extract_cmd(action: str, rollback_version: str, force: bool):
             click.echo(f"Error: {e}", err=True)
             raise SystemExit(1)
         click.echo(f"Promoted to {version}")
-        _clear_extract_sandbox_accepted()
+        _clear_sandbox_accepted(EXTRACT_REVIEWS_PATH)
 
     elif action == "discard":
         if store.discard_sandbox():
@@ -433,7 +968,7 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
     from cleo.config import (
         MAPBOX_TOKEN, HERE_API_KEY, GEOCODIO_KEY,
         GEOCODE_CACHE_PATH, COORDINATES_PATH, ADDRESS_INDEX_PATH,
-        EXTRACTED_DIR, EXTRACT_REVIEWS_PATH, GW_PARSED_DIR, BRANDS_DATA_DIR,
+        EXTRACTED_DIR, EXPANDED_DIR, EXTRACT_REVIEWS_PATH, GW_PARSED_DIR, BRANDS_DATA_DIR,
     )
     from cleo.geocode.store import CoordinateStore
 
@@ -476,18 +1011,24 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
     if do_collect:
         from cleo.geocode.unified_collector import collect_all, register_in_store, stats_summary
 
-        ext_store = extract_ver.store
-        ext_active = ext_store.active_dir()
-        gw_store = _gw_versioned_store()
-        gw_active = gw_store.active_dir() if gw_store else None
-
-        click.echo("Collecting addresses from all sources...\n")
-        addresses = collect_all(
-            extracted_dir=ext_active,
-            reviews_path=EXTRACT_REVIEWS_PATH,
-            gw_parsed_dir=gw_active,
-            brands_data_dir=BRANDS_DATA_DIR,
-        )
+        # Prefer expanded pipeline (has all sources merged)
+        expand_active = EXPANDED_DIR / "active"
+        if expand_active.is_dir():
+            click.echo("Collecting addresses from expanded pipeline...\n")
+            addresses = collect_all(expanded_dir=expand_active)
+        else:
+            # Legacy fallback
+            ext_store = extract_ver.store
+            ext_active = ext_store.active_dir()
+            gw_store = _gw_versioned_store()
+            gw_active = gw_store.active_dir() if gw_store else None
+            click.echo("Collecting addresses from legacy extracted pipeline...\n")
+            addresses = collect_all(
+                extracted_dir=ext_active,
+                reviews_path=EXTRACT_REVIEWS_PATH,
+                gw_parsed_dir=gw_active,
+                brands_data_dir=BRANDS_DATA_DIR,
+            )
         added = register_in_store(store, addresses)
         store.save()
 
@@ -540,16 +1081,20 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
     if not store.addresses:
         click.echo("Coordinate store is empty. Running --collect first...\n")
         from cleo.geocode.unified_collector import collect_all, register_in_store
-        ext_store = extract_ver.store
-        ext_active = ext_store.active_dir()
-        gw_store = _gw_versioned_store()
-        gw_active = gw_store.active_dir() if gw_store else None
-        addresses = collect_all(
-            extracted_dir=ext_active,
-            reviews_path=EXTRACT_REVIEWS_PATH,
-            gw_parsed_dir=gw_active,
-            brands_data_dir=BRANDS_DATA_DIR,
-        )
+        expand_active = EXPANDED_DIR / "active"
+        if expand_active.is_dir():
+            addresses = collect_all(expanded_dir=expand_active)
+        else:
+            ext_store = extract_ver.store
+            ext_active = ext_store.active_dir()
+            gw_store = _gw_versioned_store()
+            gw_active = gw_store.active_dir() if gw_store else None
+            addresses = collect_all(
+                extracted_dir=ext_active,
+                reviews_path=EXTRACT_REVIEWS_PATH,
+                gw_parsed_dir=gw_active,
+                brands_data_dir=BRANDS_DATA_DIR,
+            )
         register_in_store(store, addresses)
         store.save()
         click.echo(f"  Registered {len(store.addresses):,} addresses.\n")
@@ -618,6 +1163,150 @@ def _gw_versioned_store():
     if not GW_PARSED_DIR.is_dir():
         return None
     return VersionedStore(base_dir=GW_PARSED_DIR)
+
+
+@main.command(name="geocoded")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Assemble geocoded snapshots from expanded + coordinates → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare geocoded sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote geocoded sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete geocoded sandbox.")
+@click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
+@click.option("--status", "action", flag_value="status", help="Show geocoded version info.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+def geocoded_cmd(action: str, rollback_version: str, force: bool):
+    """Manage versioned geocoded data (expanded records + coordinates).
+
+    Reads expanded/active, looks up coordinates from coordinates.json,
+    and writes geocoded records with coords embedded in each address entry.
+    This is a lookup/assembly step — it does NOT call geocoding APIs.
+
+    \b
+    Run API geocoding first:  cleo geocode --provider mapbox
+    Then snapshot results:    cleo geocoded --sandbox
+    """
+    from cleo.geocode import versioning as geo_ver
+    from cleo.geocode.geocoded_engine import geocode_all
+    from cleo.geocode.store import CoordinateStore
+    from cleo.config import EXPANDED_DIR, COORDINATES_PATH, GEO_REVIEWS_PATH
+
+    store = geo_ver.store
+
+    if rollback_version:
+        action = "rollback"
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        has_sandbox = store.sandbox_path().is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+
+        # Show coordinate store stats too
+        if COORDINATES_PATH.exists():
+            coord_store = CoordinateStore(COORDINATES_PATH)
+            stats = coord_store.stats()
+            click.echo(f"\nCoordinate store:")
+            click.echo(f"  Total addresses:   {stats['total_addresses']:,}")
+            for prov, count in sorted(stats["by_provider"].items()):
+                pct = 100 * count / stats["total_addresses"] if stats["total_addresses"] else 0
+                click.echo(f"  {prov:>10s}:       {count:,}  ({pct:.1f}%)")
+
+    elif action == "sandbox":
+        if store.sandbox_path().is_dir():
+            click.echo("Sandbox already exists. Use --discard first.", err=True)
+            raise SystemExit(1)
+
+        expand_active = EXPANDED_DIR / "active"
+        if not expand_active.exists():
+            click.echo("No active expanded version. Run 'cleo expand --sandbox' then '--promote' first.", err=True)
+            raise SystemExit(1)
+
+        if not COORDINATES_PATH.exists():
+            click.echo("No coordinates.json found. Run 'cleo geocode --collect' then 'cleo geocode --provider mapbox' first.", err=True)
+            raise SystemExit(1)
+
+        coord_store = CoordinateStore(COORDINATES_PATH)
+        expand_ver_name = expand_active.resolve().name if expand_active.is_symlink() else ""
+
+        sb = store.ensure_sandbox()
+        click.echo(f"Assembling geocoded records from {expand_ver_name} + coordinates → {sb}\n")
+
+        summary = geocode_all(
+            source_dir=expand_active,
+            output_dir=sb,
+            coord_store=coord_store,
+            source_version=expand_ver_name,
+        )
+
+        click.echo(
+            f"\nDone: {summary['geocoded']:,} records, "
+            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
+        )
+        click.echo(f"\nAddress-level stats:")
+        click.echo(f"  Total address entries:   {summary['addr_total']:,}")
+        click.echo(f"  Geocoded (have coords):  {summary['addr_geocoded']:,}")
+        click.echo(f"  Missing (no coords):     {summary['addr_missing']:,}")
+        click.echo(f"  Skipped (skip_geocode):  {summary['addr_skipped']:,}")
+        if summary["addr_total"]:
+            pct = 100 * summary["addr_geocoded"] / summary["addr_total"]
+            click.echo(f"  Coverage:                {pct:.1f}%")
+        if summary.get("by_source"):
+            click.echo(f"\nBy source:")
+            for src, count in sorted(summary["by_source"].items()):
+                click.echo(f"  {src:<20s}  {count:>7,}")
+        if summary["error_ids"]:
+            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
+
+    elif action == "diff":
+        try:
+            diff_result = store.diff_sandbox_vs_active()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(format_diff_report(diff_result))
+
+    elif action == "promote":
+        if store.active_dir() and store.sandbox_path().is_dir() and not force:
+            try:
+                diff_result = store.diff_sandbox_vs_active()
+                regressions = diff_result.get("regressions", [])
+                if regressions:
+                    click.echo(f"\nBLOCKED: {len(regressions)} reviewed-Clean record(s) would change:\n")
+                    for r in regressions[:10]:
+                        fields = ", ".join(r["changed_fields"][:5])
+                        click.echo(f"  {r['rt_id']}  →  {fields}")
+                    if len(regressions) > 10:
+                        click.echo(f"  ... and {len(regressions) - 10} more")
+                    click.echo(f"\nUpdate reviews or use --force to override.")
+                    raise SystemExit(1)
+            except FileNotFoundError:
+                pass
+        try:
+            version = store.promote()
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        _clear_sandbox_accepted(GEO_REVIEWS_PATH)
+        click.echo(f"Promoted to {version}")
+
+    elif action == "discard":
+        if store.discard_sandbox():
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+    elif action == "rollback":
+        try:
+            store.rollback(rollback_version)
+        except FileNotFoundError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+        click.echo(f"Active → {rollback_version}")
 
 
 @main.command()
@@ -1118,9 +1807,8 @@ def review(flag: str):
     click.echo(f"Total determinations: {len(determinations)}")
 
 
-def _clear_sandbox_accepted():
-    """Remove sandbox_accepted flags from reviews after promotion."""
-    reviews_path = DATA_DIR / "reviews.json"
+def _clear_sandbox_accepted(reviews_path):
+    """Remove sandbox_accepted flags from a reviews file after promotion."""
     if not reviews_path.exists():
         return
     reviews = json.loads(reviews_path.read_text(encoding="utf-8"))
@@ -1131,22 +1819,6 @@ def _clear_sandbox_accepted():
             changed = True
     if changed:
         with open(reviews_path, "w", encoding="utf-8") as f:
-            json.dump(reviews, f, indent=2, sort_keys=True)
-
-
-def _clear_extract_sandbox_accepted():
-    """Remove sandbox_accepted flags from extraction reviews after promotion."""
-    from cleo.config import EXTRACT_REVIEWS_PATH
-    if not EXTRACT_REVIEWS_PATH.exists():
-        return
-    reviews = json.loads(EXTRACT_REVIEWS_PATH.read_text(encoding="utf-8"))
-    changed = False
-    for r in reviews.values():
-        if "sandbox_accepted" in r:
-            del r["sandbox_accepted"]
-            changed = True
-    if changed:
-        with open(EXTRACT_REVIEWS_PATH, "w", encoding="utf-8") as f:
             json.dump(reviews, f, indent=2, sort_keys=True)
 
 
@@ -2398,136 +3070,537 @@ def footprint_enrich_cmd(dry_run, no_snap):
 
 
 @main.command(name="parcels")
-@click.option("--status", "show_status", is_flag=True, help="Show parcel harvest status.")
-@click.option("--harvest", is_flag=True, help="Harvest parcels from ArcGIS services.")
-@click.option("--municipality", type=str, default=None, help="Only harvest for this municipality (e.g. london, grey).")
-@click.option("--dry-run", is_flag=True, help="Preview eligible properties without querying.")
-@click.option("--limit", type=int, default=None, help="Max properties to query (for testing).")
-def parcels_cmd(show_status, harvest, municipality, dry_run, limit):
-    """Harvest municipal parcel boundaries from ArcGIS REST services.
+@click.option("--build", is_flag=True, help="Build the full parcel registry.")
+@click.option("--harvest", is_flag=True, help="Harvest parcel polygons from coordinates.json via provincial ArcGIS.")
+@click.option("--skip-api", is_flag=True, help="Build from cache only (no provincial API queries).")
+@click.option("--limit", type=int, default=None, help="Process first N points/records (for testing).")
+@click.option("--dry-run", is_flag=True, help="Preview without saving.")
+@click.option("--status", "show_status", is_flag=True, help="Show registry stats.")
+@click.option("--resolve-arn", "resolve_arn", default=None, help="Resolve a single ARN.")
+@click.option("--resolve-pin", "resolve_pin", default=None, help="Resolve a single PIN.")
+@click.option("--resolve-coords", "resolve_coords", nargs=2, type=float, default=None, help="Resolve lat lng.")
+@click.option("--seed-cache", is_flag=True, help="Seed parcel cache from branded_parcels/ without building registry.")
+def parcels_cmd(build, harvest, skip_api, limit, dry_run, show_status, resolve_arn, resolve_pin, resolve_coords, seed_cache):
+    """Parcel-centric registry: build, resolve, and inspect.
 
-    Downloads parcel polygons and attributes for properties in covered
-    municipalities. For services with an address layer configured (e.g. London),
-    harvests by address lookup first -- no coordinates required. Falls back to
-    coordinate bbox for services without an address layer.
+    The parcel registry is the master data store. Every commercial parcel
+    is discovered via branded locations, RT transactions, or GW records,
+    then enriched with geometry, transactions, assessment, and population.
 
     \b
     Examples:
-        cleo parcels --status                          # Show harvest stats
-        cleo parcels --harvest --dry-run               # Preview eligible properties
-        cleo parcels --harvest --municipality london    # Harvest London via address lookup
-        cleo parcels --harvest                          # Harvest all municipalities
-        cleo parcels --harvest --limit 5               # Test with 5 properties
+        cleo parcels --status                          # Show registry stats
+        cleo parcels --seed-cache                      # Seed cache from branded harvests
+        cleo parcels --build --skip-api                # Build from cache only
+        cleo parcels --build --limit 100 --dry-run     # Test build with 100 RT records
+        cleo parcels --build                           # Full build (requires AgMaps token)
+        cleo parcels --resolve-arn 393601009007200     # Resolve a single ARN
+        cleo parcels --resolve-pin 082620036           # Resolve a single PIN
+        cleo parcels --resolve-coords 42.98 -81.26    # Resolve a point
     """
-    from cleo.parcels.harvester import harvest_parcels, harvest_status
+    from cleo.config import PARCEL_CACHE_PATH, PARCEL_REGISTRY_PATH, BRANDED_PARCELS_DIR, COORDINATES_PATH, PROVINCIAL_RAW_PATH
 
     if show_status:
-        st = harvest_status()
-        click.echo("\n=== Parcel Harvest ===")
-        click.echo(f"Parcels cached:     {st['total_parcels']:,}")
-        click.echo(f"Properties mapped:  {st['properties_mapped']:,}")
-        click.echo(f"No coverage:        {st['no_coverage']:,}")
-        by_muni = st.get("by_municipality", {})
-        if by_muni:
-            click.echo("\nBy municipality:")
-            for m, cnt in sorted(by_muni.items()):
-                click.echo(f"  {m}: {cnt:,}")
-        services = st.get("services", {})
-        if services:
-            click.echo(f"\nRegistered services: {len(services)}")
-            for key, svc in services.items():
-                cities_str = ", ".join(svc["cities"][:5])
-                if len(svc["cities"]) > 5:
-                    cities_str += f" (+{len(svc['cities']) - 5} more)"
-                click.echo(f"  {key}: {svc['name']} ({cities_str})")
-        click.echo()
+        _parcels_status()
         return
 
-    if not harvest:
-        click.echo("Use --harvest to start harvesting, or --status to check progress.")
-        click.echo("Run 'cleo parcels --help' for all options.")
+    if seed_cache:
+        from cleo.parcels.cache import ParcelCache
+        cache = ParcelCache()
+        added = cache.seed_from_branded_parcels(BRANDED_PARCELS_DIR)
+        cache.save()
+        stats = cache.stats()
+        click.echo(f"Seeded parcel cache: {added:,} new parcels")
+        click.echo(f"Total in cache:      {stats['total']:,}")
+        click.echo(f"With geometry:       {stats['with_geometry']:,}")
+        click.echo(f"Saved to {PARCEL_CACHE_PATH}")
         return
 
-    prefix = "[DRY RUN] " if dry_run else ""
-    click.echo(f"{prefix}Harvesting parcel boundaries...\n")
+    if harvest:
+        from cleo.parcels.provincial_harvester import harvest_from_coords, collect_unique_points
+        from cleo.parcels.provincial import ProvincialParcelClient, TokenExpiredError
+        from cleo.geocode.store import CoordinateStore
+        from cleo.parcels.store import ParcelStore
 
-    result = harvest_parcels(
-        municipality=municipality,
-        dry_run=dry_run,
-        limit=limit,
-    )
+        coord_store = CoordinateStore(COORDINATES_PATH)
+        if not coord_store.addresses:
+            click.echo("No addresses in coordinates.json. Run 'cleo geocode' first.", err=True)
+            raise SystemExit(1)
 
-    if "error" in result:
-        click.echo(f"Error: {result['error']}", err=True)
-        if result.get("no_coords"):
-            click.echo(f"  Properties without coords: {result['no_coords']:,}")
-        if result.get("no_coverage"):
-            click.echo(f"  Properties outside coverage: {result['no_coverage']:,}")
-        raise SystemExit(1)
+        if dry_run:
+            points = collect_unique_points(coord_store)
+            from cleo.parcels.provincial_harvester import _load_queried_points
+            queried = _load_queried_points()
+            pending = len([p for p in points if p[0] not in queried])
+            click.echo(f"Unique geocoded points in Ontario: {len(points):,}")
+            click.echo(f"Already queried:                   {len(queried):,}")
+            click.echo(f"Pending:                           {pending:,}")
+            if limit:
+                click.echo(f"Would query:                       {min(pending, limit):,}")
+            return
 
-    if dry_run:
-        click.echo(f"{prefix}Eligible properties: {result['eligible_properties']:,}")
-        by_muni = result.get("by_municipality", {})
-        for m, cnt in sorted(by_muni.items()):
-            click.echo(f"  {m}: {cnt:,}")
-        click.echo(f"\nNo coords:    {result['no_coords']:,}")
-        click.echo(f"No coverage:  {result['no_coverage']:,}")
+        try:
+            client = ProvincialParcelClient()
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            raise SystemExit(1)
+
+        # Test token
+        try:
+            info = client.test_connection()
+            click.echo(f"Provincial ArcGIS connected: {info.get('name', 'OK')}")
+        except TokenExpiredError:
+            click.echo("AgMaps token expired. Run: .venv/bin/python scripts/fetch_agmaps_token.py", err=True)
+            raise SystemExit(1)
+
+        # Write to isolated provincial_raw.json — NOT the canonical parcels.json
+        parcel_store = ParcelStore(path=PROVINCIAL_RAW_PATH)
+        click.echo(f"Writing to isolated store: {PROVINCIAL_RAW_PATH}")
+
+        try:
+            summary = harvest_from_coords(
+                coord_store=coord_store,
+                parcel_store=parcel_store,
+                client=client,
+                limit=limit,
+            )
+        except TokenExpiredError:
+            click.echo("\nToken expired during harvest. Progress saved. Refresh and re-run.")
+            raise SystemExit(1)
+        finally:
+            client.close()
+
+        click.echo(f"\nHarvest summary:")
+        click.echo(f"  Total unique points:  {summary['total_points']:,}")
+        click.echo(f"  Already queried:      {summary['already_queried']:,}")
+        click.echo(f"  Queried this run:     {summary['queried']:,}")
+        click.echo(f"  Parcels found:        {summary['parcels_found']:,}")
+        click.echo(f"  No parcel at point:   {summary['no_parcel']:,}")
+        click.echo(f"  Errors:               {summary['errors']:,}")
+        click.echo(f"  Elapsed:              {summary['elapsed']}s")
+        click.echo(f"  Stored at:            {PROVINCIAL_RAW_PATH}")
         return
 
-    click.echo(f"Queried:       {result['queried']:,}")
-    click.echo(f"Found:         {result['found']:,}")
-    click.echo(f"No result:     {result['no_result']:,}")
-    click.echo(f"Elapsed:       {result['elapsed_s']:.1f}s")
+    if resolve_arn or resolve_pin or resolve_coords:
+        _parcels_resolve(resolve_arn, resolve_pin, resolve_coords)
+        return
+
+    if build:
+        from cleo.parcels.registry_builder import build_registry
+        prefix = "[DRY RUN] " if dry_run else ""
+        click.echo(f"{prefix}Building parcel registry...\n")
+
+        result = build_registry(skip_api=skip_api, limit=limit, dry_run=dry_run)
+
+        click.echo(f"\n{prefix}=== Parcel Registry Build ===")
+        click.echo(f"{prefix}Total parcels:    {result['total_parcels']:,}")
+        click.echo(f"{prefix}  Branded:        {result['branded']:,}")
+        click.echo(f"{prefix}  RT resolved:    {result['rt_resolved']:,}")
+        click.echo(f"{prefix}  RT unresolved:  {result['rt_unresolved']:,}")
+        click.echo(f"{prefix}  GW resolved:    {result['gw_resolved']:,}")
+        click.echo(f"{prefix}  With population:{result['with_population']:,}")
+        click.echo(f"{prefix}  Elapsed:        {result['elapsed_s']:.1f}s")
+        rs = result.get("resolver_stats", {})
+        click.echo(f"\n{prefix}Resolver: cache_hits={rs.get('cache_hits', 0):,} "
+                    f"api_hits={rs.get('api_hits', 0):,} "
+                    f"api_misses={rs.get('api_misses', 0):,}")
+        if not dry_run:
+            click.echo(f"\nSaved to {PARCEL_REGISTRY_PATH}")
+        return
+
+    click.echo("Use --build, --status, --seed-cache, or --resolve-*. Run 'cleo parcels --help' for options.")
 
 
-@main.command(name="parcel-enrich")
-@click.option("--dry-run", is_flag=True, help="Preview without saving.")
-@click.option("--report", is_flag=True, help="Print detailed report of multi-property parcels.")
-def parcel_enrich_cmd(dry_run, report):
-    """Consolidate properties by parcel and enrich with spatial data.
+def _parcels_status():
+    """Show parcel registry statistics."""
+    from cleo.config import PARCEL_CACHE_PATH, PARCEL_REGISTRY_PATH
 
-    Adds parcel attributes (ID, PIN, area, zoning) to properties, groups
-    properties that share the same parcel, and assigns brand POIs via
-    spatial containment. Also subsumes the old parcel-match functionality.
+    click.echo("\n=== Parcel Cache ===")
+    if PARCEL_CACHE_PATH.exists():
+        from cleo.parcels.cache import ParcelCache
+        cache = ParcelCache()
+        stats = cache.stats()
+        click.echo(f"Total:           {stats['total']:,}")
+        click.echo(f"With geometry:   {stats['with_geometry']:,}")
+        click.echo(f"With PIN:        {stats['with_pin']:,}")
+        for src, cnt in sorted(stats.get("by_source", {}).items()):
+            click.echo(f"  {src:>20s}: {cnt:,}")
+    else:
+        click.echo("(not built -- run 'cleo parcels --seed-cache')")
+
+    click.echo("\n=== Parcel Registry ===")
+    if PARCEL_REGISTRY_PATH.exists():
+        import json
+        data = json.loads(PARCEL_REGISTRY_PATH.read_text(encoding="utf-8"))
+        meta = data.get("meta", {})
+        click.echo(f"Total parcels:     {meta.get('total', 0):,}")
+        click.echo(f"Generated at:      {meta.get('generated_at', 'unknown')}")
+        sources = meta.get("sources", {})
+        for src, cnt in sorted(sources.items()):
+            click.echo(f"  {src:>10s}: {cnt:,}")
+        stats = meta.get("stats", {})
+        click.echo(f"With transactions: {stats.get('with_transactions', 0):,}")
+        click.echo(f"With brands:       {stats.get('with_brands', 0):,}")
+        click.echo(f"With assessment:   {stats.get('with_assessment', 0):,}")
+        click.echo(f"With geometry:     {stats.get('with_geometry', 0):,}")
+        click.echo(f"With population:   {stats.get('with_population', 0):,}")
+        click.echo(f"RT resolved:       {stats.get('rt_resolved', 0):,}")
+        click.echo(f"RT unresolved:     {stats.get('rt_unresolved', 0):,}")
+        click.echo(f"GW resolved:       {stats.get('gw_resolved', 0):,}")
+    else:
+        click.echo("(not built -- run 'cleo parcels --build')")
+    click.echo()
+
+
+def _parcels_resolve(resolve_arn, resolve_pin, resolve_coords):
+    """Resolve a single parcel identifier."""
+    import json as _json
+    from cleo.parcels.cache import ParcelCache
+    from cleo.parcels.resolver import ParcelResolver
+
+    cache = ParcelCache()
+    resolver = ParcelResolver(cache=cache, skip_api=False)
+
+    result = None
+    if resolve_arn:
+        click.echo(f"Resolving ARN: {resolve_arn}")
+        result = resolver.resolve_by_arn(resolve_arn)
+    elif resolve_pin:
+        click.echo(f"Resolving PIN: {resolve_pin}")
+        result = resolver.resolve_by_pin(resolve_pin)
+    elif resolve_coords:
+        lat, lng = resolve_coords
+        click.echo(f"Resolving coords: ({lat}, {lng})")
+        result = resolver.resolve_by_coords(lat, lng)
+
+    if result:
+        display = dict(result)
+        if display.get("geometry"):
+            geom = display["geometry"]
+            ncoords = len(geom.get("coordinates", [[]])[0]) if geom.get("coordinates") else 0
+            display["geometry"] = f"<{geom.get('type', '?')} with {ncoords} vertices>"
+        click.echo(_json.dumps(display, indent=2, ensure_ascii=False, default=str))
+        resolver.save_cache()
+    else:
+        click.echo("Not found.")
+    click.echo(f"\nResolver stats: {resolver.get_stats()}")
+
+
+@main.command(name="monitor")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON metrics.")
+@click.option("--save", "save_snapshot", is_flag=True, help="Save timestamped snapshot to data/metrics/.")
+@click.option("--stage", "stage_filter", default=None, help="Show only this stage (e.g. parsed, geocoded).")
+def monitor_cmd(as_json: bool, save_snapshot: bool, stage_filter: str):
+    """Pipeline health monitor — field coverage, quality gates, stage stats.
+
+    Shows the full pipeline at a glance: record counts per stage, field coverage
+    bars, triggered quality gates, and data flow continuity checks.
 
     \b
     Examples:
-        cleo parcel-enrich              # Run consolidation
-        cleo parcel-enrich --dry-run    # Preview without saving
-        cleo parcel-enrich --report     # Show multi-property parcel details
+        cleo monitor              # Full pipeline health report
+        cleo monitor --json       # Raw metrics as JSON
+        cleo monitor --save       # Save snapshot to data/metrics/
+        cleo monitor --stage parsed   # Show only parsed stage
     """
-    from cleo.parcels.consolidate import consolidate
+    from cleo.monitor.collectors import collect_all
+    from cleo.monitor.gates import evaluate_gates
+    from cleo.config import METRICS_DIR
 
-    prefix = "[DRY RUN] " if dry_run else ""
-    click.echo(f"{prefix}Running parcel consolidation...\n")
-    result = consolidate(dry_run=dry_run)
+    click.echo("Collecting metrics across all pipeline stages...\n")
+    metrics = collect_all()
 
-    if "error" in result:
-        click.echo(f"Error: {result['error']}", err=True)
-        raise SystemExit(1)
+    if save_snapshot:
+        ts = metrics["collected_at"].replace(":", "-")
+        snap_path = METRICS_DIR / f"snapshot_{ts}.json"
+        snap_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        click.echo(f"Snapshot saved: {snap_path}\n")
 
-    click.echo(f"{prefix}Properties enriched:         {result['enriched']:,}")
-    click.echo(f"{prefix}Cleared stale:               {result['cleared_stale']:,}")
-    click.echo(f"{prefix}Spatially matched (new):     {result['spatially_matched']:,}")
-    click.echo(f"{prefix}Multi-property parcels:      {result['multi_property_parcels']:,}")
-    click.echo(f"{prefix}Brand POIs matched:          {result['brands_matched']:,}")
-    click.echo(f"{prefix}Parcels with brands:         {result['parcels_with_brands']:,}")
-    click.echo(f"{prefix}Total properties:            {result['total_properties']:,}")
+    if as_json:
+        click.echo(json.dumps(metrics, indent=2, ensure_ascii=False, default=str))
+        return
 
-    if report:
-        multi = result.get("multi_details", [])
-        if not multi:
-            click.echo("\nNo multi-property parcels found.")
-        else:
-            click.echo(f"\n=== Multi-Property Parcels ({len(multi)}) ===\n")
-            for detail in multi[:50]:  # cap output
-                click.echo(f"  {detail['pcl_id']} ({detail['municipality']}) -- {detail['property_count']} properties")
-                for i, pid in enumerate(detail["property_ids"]):
-                    addr = detail["addresses"][i] if i < len(detail["addresses"]) else ""
-                    click.echo(f"    {pid}  {addr}")
-                if detail.get("brands"):
-                    click.echo(f"    Brands: {', '.join(detail['brands'])}")
-                click.echo()
+    # ── Pretty-print pipeline health report ──
+
+    def bar(pct: float, width: int = 20) -> str:
+        filled = int(pct / 100 * width)
+        return f"[{'#' * filled}{'.' * (width - filled)}] {pct:.1f}%"
+
+    def fmt(n: int | float) -> str:
+        if isinstance(n, float):
+            return f"{n:,.1f}"
+        return f"{n:,}"
+
+    stages = [
+        ("ingest", "Ingestion"),
+        ("parsed", "Parsed"),
+        ("normalized", "Normalized"),
+        ("expanded", "Expanded"),
+        ("geocoded", "Geocoded"),
+        ("parcels", "Parcels"),
+        ("properties", "Properties"),
+        ("geowarehouse", "GeoWarehouse"),
+        ("brands", "Brands"),
+    ]
+
+    for key, label in stages:
+        if stage_filter and key != stage_filter:
+            continue
+
+        m = metrics.get(key, {})
+        if not m:
+            continue
+
+        elapsed = m.get("elapsed", 0)
+        click.echo(f"{'=' * 60}")
+        click.echo(f"  {label.upper():<20s}  (collected in {elapsed:.1f}s)")
+        click.echo(f"{'=' * 60}")
+
+        if key == "ingest":
+            click.echo(f"  HTML files:        {fmt(m.get('total_html_files', 0))}")
+            click.echo(f"  Tracker entries:   {fmt(m.get('tracker_total', 0))}")
+            click.echo(f"  HTML index:        {fmt(m.get('index_total', 0))}")
+            if m.get("latest_batch_date"):
+                click.echo(f"  Latest batch:      {m['latest_batch_date']} ({m.get('latest_batch_count', 0)} records)")
+            if m.get("by_type"):
+                click.echo(f"  By type:")
+                for t, c in sorted(m["by_type"].items(), key=lambda x: -x[1]):
+                    click.echo(f"    {t:<20s} {fmt(c)}")
+
+        elif key == "parsed":
+            ver = m.get("version", "?")
+            total = m.get("total_records", 0)
+            click.echo(f"  Version:           {ver}")
+            click.echo(f"  Total records:     {fmt(total)}")
+            fc = m.get("field_coverage", {})
+            if fc:
+                click.echo(f"  Field coverage:")
+                for field, info in fc.items():
+                    click.echo(f"    {field:<20s} {bar(info.get('pct', 0))}")
+            if m.get("html_flag_counts"):
+                click.echo(f"  HTML flags:        {m.get('html_flags_total', 0)} records flagged")
+            if m.get("parse_flag_counts"):
+                click.echo(f"  Parse flags:       {m.get('parse_flags_total', 0)} records flagged")
+            rv = m.get("reviews", {})
+            if rv:
+                click.echo(f"  Reviews:           {rv.get('clean', 0)} clean, {rv.get('parser_issue', 0)} parser_issue, {rv.get('bad_source', 0)} bad_source")
+
+        elif key == "normalized":
+            ver = m.get("version", "?")
+            total = m.get("total_records", 0)
+            click.echo(f"  Version:           {ver}")
+            click.echo(f"  Total records:     {fmt(total)}")
+            bs = m.get("by_source", {})
+            if bs:
+                click.echo(f"  By source:")
+                for src, c in sorted(bs.items(), key=lambda x: -x[1]):
+                    click.echo(f"    {src:<20s} {fmt(c)}")
+            cats = m.get("categories", {})
+            if cats:
+                click.echo(f"  Categories:")
+                for cat, c in sorted(cats.items(), key=lambda x: -x[1]):
+                    click.echo(f"    {cat:<25s} {fmt(c)}")
+            cs = m.get("city_statuses", {})
+            if cs:
+                click.echo(f"  City status:")
+                for st, c in sorted(cs.items(), key=lambda x: -x[1]):
+                    pct = c / total * 100 if total else 0
+                    click.echo(f"    {st:<20s} {fmt(c):>8s}  ({pct:.1f}%)")
+            pfc = m.get("property_field_coverage", {})
+            if pfc:
+                click.echo(f"  Property field coverage:")
+                for field, info in pfc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            for role_label, role_key in [("Seller", "seller_field_coverage"), ("Buyer", "buyer_field_coverage"), ("Owner Address", "owner_address_field_coverage")]:
+                rfc = m.get(role_key, {})
+                if rfc:
+                    click.echo(f"  {role_label} field coverage:")
+                    for field, info in rfc.items():
+                        click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            gw_meta = m.get("gw_metadata", {})
+            if gw_meta:
+                click.echo(f"  GW metadata coverage:")
+                for field, info in gw_meta.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            brand_meta = m.get("brand_metadata", {})
+            if brand_meta:
+                click.echo(f"  Brand metadata coverage:")
+                for field, info in brand_meta.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+
+        elif key == "expanded":
+            ver = m.get("version", "?")
+            click.echo(f"  Version:           {ver}")
+            click.echo(f"  Records:           {fmt(m.get('total_records', 0))}")
+            click.echo(f"  Total addresses:   {fmt(m.get('total_addresses', 0))}")
+            click.echo(f"  Geocodable:        {fmt(m.get('geocodable', 0))}")
+            click.echo(f"  Skip geocode:      {fmt(m.get('skip_geocode', 0))}")
+            click.echo(f"  Compound splits:   {fmt(m.get('compound_splits', 0))}")
+            click.echo(f"  Has raw_coords:    {fmt(m.get('has_raw_coords', 0))}")
+            rp = m.get("roles_present", {})
+            if rp:
+                click.echo(f"  Roles present:")
+                for role, c in rp.items():
+                    click.echo(f"    {role:<20s} {fmt(c)}")
+            afc = m.get("address_field_coverage", {})
+            if afc:
+                click.echo(f"  Address field coverage:")
+                for field, info in afc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+
+        elif key == "geocoded":
+            total_addr = m.get("total_addresses", 0)
+            with_c = m.get("with_coords", 0)
+            click.echo(f"  Total addresses:   {fmt(total_addr)}")
+            click.echo(f"  With coordinates:  {fmt(with_c)}")
+            click.echo(f"  Missing:           {fmt(m.get('missing_coords', 0))}")
+            click.echo(f"  Coverage:          {bar(m.get('coverage_pct', 0))}")
+            click.echo(f"  Multi-provider:    {fmt(m.get('multi_provider', 0))}")
+            bp = m.get("by_provider", {})
+            if bp:
+                click.echo(f"  By provider:")
+                for prov, c in sorted(bp.items(), key=lambda x: -x[1]):
+                    pct = c / total_addr * 100 if total_addr else 0
+                    click.echo(f"    {prov:<15s} {fmt(c):>8s}  ({pct:.1f}%)")
+            acc = m.get("accuracy", {})
+            if acc:
+                click.echo(f"  Mapbox accuracy:")
+                for a, c in sorted(acc.items(), key=lambda x: -x[1]):
+                    click.echo(f"    {a:<15s} {fmt(c)}")
+            conf = m.get("confidence", {})
+            if conf:
+                click.echo(f"  Confidence:")
+                for c_lvl, cnt in sorted(conf.items(), key=lambda x: -x[1]):
+                    click.echo(f"    {c_lvl:<15s} {fmt(cnt)}")
+            mcd = m.get("match_code_detail", {})
+            if mcd:
+                click.echo(f"  Match code detail:")
+                for mf, dist in mcd.items():
+                    if dist:
+                        top = sorted(dist.items(), key=lambda x: -x[1])[:3]
+                        summary = ", ".join(f"{k}={v}" for k, v in top)
+                        click.echo(f"    {mf:<20s} {summary}")
+
+        elif key == "parcels":
+            click.echo(f"  Provincial total:  {fmt(m.get('provincial_total', 0))}")
+            click.echo(f"  Provincial links:  {fmt(m.get('provincial_property_links', 0))}")
+            click.echo(f"  Provincial no cov: {fmt(m.get('provincial_no_coverage', 0))}")
+            click.echo(f"  Municipal total:   {fmt(m.get('municipal_total', 0))}")
+            click.echo(f"  Municipal links:   {fmt(m.get('municipal_property_links', 0))}")
+            click.echo(f"  Queried points:    {fmt(m.get('queried_points', 0))}")
+            click.echo(f"  Unique ARNs:       {fmt(m.get('unique_arns', 0))}")
+            click.echo(f"  Services registry: {fmt(m.get('services_total', 0))}")
+            click.echo(f"  Prop-parcel index: {fmt(m.get('property_parcel_index_total', 0))}")
+            click.echo(f"  Parcel cache:      {fmt(m.get('parcel_cache_total', 0))}")
+            mfc = m.get("municipal_field_coverage", {})
+            if mfc:
+                click.echo(f"  Municipal field coverage:")
+                for field, info in mfc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            if m.get("provincial_raw_size_mb"):
+                click.echo(f"  Provincial file:   {m['provincial_raw_size_mb']} MB")
+            if m.get("municipal_parcels_size_mb"):
+                click.echo(f"  Municipal file:    {m['municipal_parcels_size_mb']} MB")
+
+        elif key == "properties":
+            total = m.get("total", 0)
+            click.echo(f"  Total properties:  {fmt(total)}")
+            click.echo(f"  With coordinates:  {fmt(m.get('with_coords', 0))} ({m.get('with_coords_pct', 0):.1f}%)")
+            click.echo(f"  Multi-transaction: {fmt(m.get('multi_transaction', 0))}")
+            click.echo(f"  Brand matched:     {fmt(m.get('brand_matched', 0))}")
+            fc = m.get("field_coverage", {})
+            if fc:
+                click.echo(f"  Field coverage:")
+                for field, info in fc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            gwc = m.get("gw_data_coverage", {})
+            if gwc:
+                click.echo(f"  GW data sub-fields:")
+                for field, info in gwc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+
+        elif key == "geowarehouse":
+            click.echo(f"  HTML files:        {fmt(m.get('html_files', 0))}")
+            click.echo(f"  Parsed records:    {fmt(m.get('parsed_records', 0))}")
+            click.echo(f"  Unique PINs:       {fmt(m.get('unique_pins', 0))}")
+            click.echo(f"  Has GW ID:         {fmt(m.get('has_gw_id', 0))}")
+            click.echo(f"  Sales history:     {fmt(m.get('with_sales_history', 0))} records, {fmt(m.get('total_sales_entries', 0))} entries ({m.get('avg_sales_per_record', 0):.1f}/rec)")
+            sc = m.get("summary_coverage", {})
+            if sc:
+                click.echo(f"  Summary block coverage:")
+                for field, info in sc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            rc = m.get("registry_coverage", {})
+            if rc:
+                click.echo(f"  Registry block coverage:")
+                for field, info in rc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+            ssc = m.get("site_structure_coverage", {})
+            if ssc:
+                click.echo(f"  Site structure coverage:")
+                for field, info in ssc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+
+        elif key == "brands":
+            click.echo(f"  Total brands:      {fmt(m.get('total_brands', 0))}")
+            click.echo(f"  Total stores:      {fmt(m.get('total_stores', 0))}")
+            bfc = m.get("field_coverage", {})
+            if bfc:
+                click.echo(f"  Field coverage:")
+                for field, info in bfc.items():
+                    click.echo(f"    {field:<25s} {bar(info.get('pct', 0))}")
+
+        click.echo()
+
+    # ── Quality Gates ──
+    click.echo(f"{'=' * 60}")
+    click.echo(f"  QUALITY GATES")
+    click.echo(f"{'=' * 60}")
+
+    triggered = evaluate_gates(metrics)
+    if not triggered:
+        click.echo("  All gates passed.\n")
+    else:
+        level_symbols = {"critical": "CRIT", "warning": "WARN", "info": "INFO"}
+        for g in triggered:
+            sym = level_symbols.get(g["level"], "????")
+            click.echo(f"  [{sym}] {g['id']} ({g['stage']}) {g['name']}")
+            click.echo(f"         {g['message']}")
+        click.echo()
+
+    # ── Data Flow Summary ──
+    ingest = metrics.get("ingest", {})
+    parsed = metrics.get("parsed", {})
+    norm = metrics.get("normalized", {})
+    expanded = metrics.get("expanded", {})
+    geocoded = metrics.get("geocoded", {})
+    parcels = metrics.get("parcels", {})
+    props = metrics.get("properties", {})
+
+    click.echo(f"{'=' * 60}")
+    click.echo(f"  DATA FLOW SUMMARY")
+    click.echo(f"{'=' * 60}")
+    click.echo(f"  HTML files       →  {fmt(ingest.get('total_html_files', 0))}")
+    click.echo(f"  Parsed records   →  {fmt(parsed.get('total_records', 0))}")
+    click.echo(f"  Normalized       →  {fmt(norm.get('total_records', 0))}  (3 sources merged)")
+    click.echo(f"  Expanded addrs   →  {fmt(expanded.get('total_addresses', 0))}")
+    click.echo(f"  Geocoded addrs   →  {fmt(geocoded.get('with_coords', 0))} / {fmt(geocoded.get('total_addresses', 0))}")
+    click.echo(f"  Parcels          →  {fmt(parcels.get('provincial_total', 0))}")
+    click.echo(f"  Properties       →  {fmt(props.get('total', 0))}")
+    click.echo()
+
+    # ── Legacy / Frozen ──
+    legacy = metrics.get("legacy", {})
+    parties = legacy.get("parties", {})
+    if parties and parties.get("total", 0) > 0 and (not stage_filter or stage_filter == "parties"):
+        click.echo(f"{'=' * 60}")
+        click.echo(f"  LEGACY / FROZEN")
+        click.echo(f"{'=' * 60}")
+        click.echo(f"  Parties (frozen — will be rebuilt as read-only view on clean data)")
+        click.echo(f"    Groups:          {fmt(parties.get('total', 0))}  ({fmt(parties.get('companies', 0))} companies, {fmt(parties.get('persons', 0))} persons)")
+        click.echo(f"    Appearances:     {fmt(parties.get('total_appearances', 0))}")
+        click.echo(f"    RT IDs linked:   {fmt(parties.get('total_rt_ids_linked', 0))}")
+        click.echo()
 
 
 @main.command(name="discover-types")

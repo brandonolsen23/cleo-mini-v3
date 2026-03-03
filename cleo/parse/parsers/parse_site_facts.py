@@ -45,6 +45,8 @@ LEGAL_DESC_PATTERNS = [
 
 # PIN patterns (more comprehensive)
 PIN_PATTERNS = [
+    re.compile(r"(?:pin|pid)[:\s#]*(\d{5}-\d{4})", re.IGNORECASE),  # RT format: PIN: 71180-0090
+    re.compile(r"\b(\d{5}-\d{4})\b"),                                 # bare 5-4 format
     re.compile(r"\b(\d{3}[-\s]?\d{3}[-\s]?\d{3}[-\s]?\d{3})\b"),
     re.compile(r"(?:pin|pid)[:\s#]*(\d{9,10})", re.IGNORECASE),
     re.compile(r"\b(\d{2}\s*\d{2}\s*\d{2}\s*\d{3}[-\s]?\d{4})\b"),

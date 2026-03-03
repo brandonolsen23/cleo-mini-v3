@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Normalize Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  .review-body { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
+  .field-changed { background: #fffef5; border-left: 3px solid #ffd43b; padding-left: 7px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Normalize Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search RT ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse">Parse</a>
+  <a href="/review/normalize" class="active">Normalize</a>
+  <a href="/review/expand">Expand</a>
+  <a href="/review/extract">Extract (legacy)</a>
+  <a href="/review/geocode" class="disabled">Geocode</a>
+  <a href="/review/parcels" class="disabled">Parcels</a>
+  <a href="/review/properties" class="disabled">Properties</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">REGRESSION — Sandbox normalization differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="reg-reject">Reject Sandbox</button>
+</div>
+
+<div class="columns">
+  <!-- Pane 1: Parsed address fields (raw input to normalizer) -->
+  <div class="column" id="col-left">
+    <div class="col-header"><span>Parsed (Raw Input)</span></div>
+    <div class="empty-state" id="left-empty">Select an RT ID</div>
+    <div class="parsed-data" id="pane-left" style="display:none;"></div>
+  </div>
+  <!-- Pane 2: Active normalization -->
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active Normalized</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select an RT ID</div>
+    <div class="norm-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <!-- Pane 3: Sandbox normalization -->
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox Normalized</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select an RT ID</div>
+    <div class="norm-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about normalization quality..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div>
+      <div class="review-pane-title">Overrides</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Normalized City</label><input id="ovr-city_normalized"></div>
+        <div class="override-item"><label>Normalized Address</label><input id="ovr-address_normalized"></div>
+        <div class="override-item"><label>Seller City</label><input id="ovr-seller_city_normalized"></div>
+        <div class="override-item"><label>Buyer City</label><input id="ovr-buyer_city_normalized"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── Normalize-specific override fields ──
+const NORM_OVERRIDE_FIELDS = [
+  'city_normalized', 'address_normalized',
+  'seller_city_normalized', 'buyer_city_normalized',
+];
+
+for (const f of NORM_OVERRIDE_FIELDS) {
+  const el = document.getElementById('ovr-' + f);
+  if (el) el.addEventListener('input', () => review.markDirty());
+}
+
+// ── State ──
+let parsedData = null;
+let normActive = null;
+let normSandbox = null;
+let hasNormSandbox = false;
+
+// ── Render parsed address fields for pane 1 ──
+function renderParsedAddresses(container, data) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  const t = data.transaction || {};
+  const addr = t.address || {};
+  const xferor = data.transferor || {};
+  const xferee = data.transferee || {};
+
+  let html = '';
+
+  // Focus on address-relevant fields only
+  html += section('Property Address', [
+    field('Address', addr.address),
+    field('Suite', addr.address_suite),
+    field('City', addr.city),
+    field('Municipality', addr.municipality),
+    field('Province', addr.province),
+    field('Postal Code', addr.postal_code),
+    ...(addr.alternate_addresses?.length
+      ? [field('Alt Addresses', addr.alternate_addresses.join('; '))]
+      : []),
+  ]);
+
+  html += section('Seller Address', [
+    field('Name', xferor.name),
+    field('Address', formatVal(xferor.address)),
+  ]);
+
+  html += section('Buyer Address', [
+    field('Name', xferee.name),
+    field('Address', formatVal(xferee.address)),
+  ]);
+
+  // Sale context (helps verify normalization)
+  html += section('Context', [
+    field('RT Number', t.rt_number),
+    field('Sale Date', t.sale_date),
+    field('Sale Price', t.sale_price),
+  ]);
+
+  container.innerHTML = html;
+}
+
+// ── Render source info for brand/GW records in pane 1 ──
+function renderSourceInfo(container, data) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+  const src = data.source || '';
+
+  if (src === 'brand') {
+    html += section('Brand Source', [
+      field('Brand', data.brand),
+      field('Store Name', data.store_name),
+      field('Source File', data.source_file),
+      field('Brand ID', data.brand_id),
+    ]);
+    const p = data.property || {};
+    html += section('Raw Address', [
+      field('Address', p.raw_address),
+      field('City', p.raw_city || p.normalized_city),
+      field('Province', p.normalized_province),
+      field('Postal Code', p.normalized_postal_code),
+    ]);
+    if (p.raw_coords) {
+      html += section('Coordinates', [
+        field('Lat', p.raw_coords.lat),
+        field('Lng', p.raw_coords.lng),
+        field('Source', p.raw_coords.source),
+      ]);
+    }
+  } else if (src === 'geowarehouse') {
+    html += section('GeoWarehouse Source', [
+      field('GW ID', data.gw_id),
+      field('PIN', data.pin),
+    ]);
+    const p = data.property || {};
+    html += section('Property Address (Raw)', [
+      field('Address', p.raw_address),
+      field('City', p.normalized_city),
+      field('Province', p.normalized_province),
+    ]);
+    if (data.owner_name) {
+      html += section('Owner', [
+        field('Owner Name', data.owner_name),
+        ...(data.owner_contacts?.length ? [field('Contacts', data.owner_contacts.join(', '))] : []),
+        ...(data.owner_care_of?.length ? [field('Care Of', data.owner_care_of.join(', '))] : []),
+      ]);
+    }
+    const oa = data.owner_address || {};
+    if (oa.raw_address) {
+      html += section('Owner Address (Raw)', [
+        field('Mailing Address', oa.raw_address),
+      ]);
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+// Render owner name, contacts, and care_of (GeoWarehouse records)
+function renderOwnerInfo(data, compareData) {
+  const cmp = compareData || {};
+  let html = '<div class="section"><div class="section-title">Owner</div>';
+  html += normField('Owner Name', data.owner_name, cmp.owner_name);
+  const contacts = data.owner_contacts || [];
+  const cmpContacts = cmp.owner_contacts || [];
+  if (contacts.length || cmpContacts.length) {
+    const val = contacts.join(', ') || '';
+    const cmpVal = cmpContacts.join(', ') || '';
+    html += normField('Contacts (persons)', val, cmpVal !== val ? cmpVal : val);
+  }
+  const careOf = data.owner_care_of || [];
+  const cmpCareOf = cmp.owner_care_of || [];
+  if (careOf.length || cmpCareOf.length) {
+    const val = careOf.join(', ') || '';
+    const cmpVal = cmpCareOf.join(', ') || '';
+    html += normField('Care Of (companies)', val, cmpVal !== val ? cmpVal : val);
+  }
+  html += '</div>';
+  return html;
+}
+
+// ── Render normalized data for pane 2/3 ──
+// compareData is the other pane's data (for diff highlighting between active vs sandbox)
+function renderNormalized(container, data, compareData) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+  html += renderAddressBlock('Property', data.property, compareData?.property);
+
+  // Alternate property addresses
+  const alts = data.property_alt || [];
+  const cmpAlts = compareData?.property_alt || [];
+  for (let i = 0; i < Math.max(alts.length, cmpAlts.length); i++) {
+    html += renderAddressBlock(`Alt ${i + 1}`, alts[i], cmpAlts[i]);
+  }
+
+  // Owner info (GeoWarehouse records)
+  if (data.owner_name || compareData?.owner_name) {
+    html += renderOwnerInfo(data, compareData);
+  }
+  if (data.owner_address || compareData?.owner_address) {
+    html += renderAddressBlock('Owner Address', data.owner_address, compareData?.owner_address);
+  }
+
+  html += renderAddressBlock('Seller', data.seller, compareData?.seller);
+  html += renderAddressBlock('Buyer', data.buyer, compareData?.buyer);
+
+  container.innerHTML = html;
+}
+
+// Render a single address block (property, seller, or buyer) with decomposed fields
+function renderAddressBlock(title, block, cmpBlock) {
+  if (!block) return '';
+  const cmp = cmpBlock || {};
+
+  // Skip empty blocks
+  if (block.category === 'empty') return '';
+
+  let html = `<div class="section"><div class="section-title">${escHtml(title)}</div>`;
+
+  html += normField('Street Number', block.street_number, cmp.street_number);
+  html += normField('Street Name', block.street_name, cmp.street_name);
+  html += normField('Street Suffix', block.street_suffix, cmp.street_suffix);
+  if (block.street_direction || cmp.street_direction)
+    html += normField('Direction', block.street_direction, cmp.street_direction);
+  if (block.unit || cmp.unit)
+    html += normField('Unit', block.unit, cmp.unit);
+  if (block.unit_type || cmp.unit_type)
+    html += normField('Unit Type', block.unit_type, cmp.unit_type);
+  if (block.po_box || cmp.po_box)
+    html += normField('PO Box', block.po_box, cmp.po_box);
+  if (block.rural_route || cmp.rural_route)
+    html += normField('Rural Route', block.rural_route, cmp.rural_route);
+  if (block.building_name || cmp.building_name)
+    html += normField('Building Name', block.building_name, cmp.building_name);
+  html += normField('City', block.normalized_city, cmp.normalized_city);
+  if (block.city_status || cmp.city_status)
+    html += normField('City Status', block.city_status, cmp.city_status);
+  if (block.normalized_province)
+    html += normField('Province', block.normalized_province, cmp.normalized_province);
+  if (block.normalized_postal_code || cmp.normalized_postal_code)
+    html += normField('Postal Code', block.normalized_postal_code, cmp.normalized_postal_code);
+  if (block.municipality)
+    html += normField('Municipality', block.municipality, cmp.municipality);
+
+  if (block.address_scope && block.address_scope !== 'ontario') {
+    const scopeCls = block.address_scope === 'international' ? 'cat-skip'
+      : block.address_scope === 'canadian' ? 'cat-warn' : 'cat-warn';
+    html += `<div class="field"><span class="field-label">Scope</span><span class="field-value"><span class="category-badge ${scopeCls}">${escHtml(block.address_scope)}</span></span></div>`;
+  }
+
+  if (block.category) {
+    const catCls =
+      block.category === 'street_address' || block.category === 'corporate_seller' || block.category === 'corporate_buyer' || block.category === 'brand'
+        ? 'cat-ok'
+        : block.category === 'no_street_number' ? 'cat-warn' : 'cat-skip';
+    html += `<div class="field"><span class="field-label">Category</span><span class="field-value"><span class="category-badge ${catCls}">${escHtml(block.category)}</span></span></div>`;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// Render a single normalized field. Highlights if it differs from compareValue.
+function normField(label, value, compareValue) {
+  const changed = compareValue !== undefined && value !== compareValue;
+  if (!value) return `<div class="field"><span class="field-label">${escHtml(label)}</span><span class="field-value empty">(empty)</span></div>`;
+  return `<div class="field${changed ? ' field-changed' : ''}"><span class="field-label">${escHtml(label)}</span><span class="field-value">${escHtml(value)}</span></div>`;
+}
+
+// ── Filters (extracted so background fetch can rebuild) ──
+function normBuildFilters() {
+  const records = review ? review.getAllRecords() : [];
+  const dets = [
+    { value: 'clean', label: 'Clean' },
+    { value: 'normalizer_issue', label: 'Normalizer Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream' },
+    { value: 'bad_data', label: 'Bad Data' },
+  ];
+  const sources = [
+    { value: 'src_realtrack', label: 'Realtrack', key: 'realtrack' },
+    { value: 'src_brand', label: 'Brands', key: 'brand' },
+    { value: 'src_geowarehouse', label: 'GeoWarehouse', key: 'geowarehouse' },
+  ];
+  const changedCount = records.filter(r => r.sandbox_changed).length;
+  const noStreetNumCount = records.filter(r => r.no_street_number).length;
+  const filters = [
+    { value: 'all', label: 'All records', fn: () => true },
+    { value: 'reviewed', label: 'Reviewed', fn: r => r.reviewed, count: records.filter(r => r.reviewed).length },
+    { value: 'unreviewed', label: 'Unreviewed', fn: r => !r.reviewed, count: records.filter(r => !r.reviewed).length },
+    { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+    ...(changedCount > 0 ? [{ value: 'sandbox_changed', label: 'Sandbox changed', fn: r => r.sandbox_changed, count: changedCount }] : []),
+    ...(noStreetNumCount > 0 ? [{ value: 'no_street_number', label: 'No street number', fn: r => r.no_street_number, count: noStreetNumCount }] : []),
+  ];
+  for (const s of sources) {
+    const cnt = records.filter(r => r.source === s.key).length;
+    if (cnt > 0) filters.push({ value: s.value, label: s.label, fn: r => r.source === s.key, count: cnt });
+  }
+  for (const d of dets) {
+    const cnt = records.filter(r => r.determination === d.value).length;
+    if (cnt > 0) filters.push({ value: d.value, label: d.label, fn: r => r.determination === d.value, count: cnt });
+  }
+  return filters;
+}
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'normalize',
+  recordsUrl: '/api/norm-rt-ids',
+  statusUrl: '/api/norm-status',
+  regressionsUrl: '/api/norm-regressions',
+  reviewUrl: '/api/norm-review',
+  rejectDetermination: 'normalizer_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'normalizer_issue', label: 'Normalizer Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream (parser)' },
+    { value: 'bad_data', label: 'Bad Data (source)' },
+  ],
+
+  getStatusText(status) {
+    hasNormSandbox = status.has_sandbox || false;
+    document.getElementById('active-version').textContent = status.active_version || 'not built';
+    document.getElementById('sandbox-version').textContent = hasNormSandbox ? 'sandbox' : '';
+    return `Normalize: ${status.active_version || 'not built'} | Sandbox: ${hasNormSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    let changedSet = new Set();
+    if (hasNormSandbox) {
+      try {
+        const res = await fetch('/api/norm-sandbox-changed');
+        if (res.ok) changedSet = new Set(await res.json());
+      } catch {}
+    }
+    let noStreetNumSet = new Set();
+    try {
+      const res = await fetch('/api/norm-no-street-number');
+      if (res.ok) noStreetNumSet = new Set(await res.json());
+    } catch {}
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+      r.sandbox_changed = changedSet.has(r.rt_id);
+      r.no_street_number = noStreetNumSet.has(r.rt_id);
+    }
+    return {};
+  },
+
+  buildFilters(extra) { return normBuildFilters(); },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // Determine source type from ID prefix
+    const isBrand = rtId.startsWith('BR_');
+    const isGW = rtId.startsWith('GW');
+    const isRT = !isBrand && !isGW;
+
+    // Fetch parsed data (pane 1 source) — only for RT records
+    parsedData = null;
+    if (isRT) {
+      try { const r = await fetch(`/api/active/${rtId}`); if (r.ok) parsedData = await r.json(); } catch {}
+    }
+
+    // Fetch normalized active + sandbox
+    normActive = null;
+    normSandbox = null;
+    try { const r = await fetch(`/api/normalized/${rtId}`); if (r.ok) normActive = await r.json(); } catch {}
+    if (hasNormSandbox) {
+      try { const r = await fetch(`/api/normalize-sandbox/${rtId}`); if (r.ok) normSandbox = await r.json(); } catch {}
+    }
+
+    // Pane 1: Source data
+    const leftEmpty = document.getElementById('left-empty');
+    if (isRT && parsedData) {
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      renderParsedAddresses(panes.left, parsedData);
+    } else if ((isBrand || isGW) && (normSandbox || normActive)) {
+      // For brand/GW, show source info — prefer sandbox (has latest fields)
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      renderSourceInfo(panes.left, normSandbox || normActive);
+    } else {
+      panes.left.style.display = 'none';
+      leftEmpty.style.display = 'flex';
+      leftEmpty.textContent = 'No source data';
+    }
+
+    // Pane 2: Active normalized
+    const middleEmpty = document.getElementById('middle-empty');
+    if (normActive) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      renderNormalized(panes.middle, normActive);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'Normalization not yet built';
+    }
+
+    // Pane 3: Sandbox normalized (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (normSandbox) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      renderNormalized(panes.right, normSandbox, normActive);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasNormSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+  },
+
+  getOverrides() {
+    const ovr = {};
+    for (const f of NORM_OVERRIDE_FIELDS) {
+      const val = document.getElementById('ovr-' + f)?.value;
+      if (val?.trim()) ovr[f] = val.trim();
+    }
+    return ovr;
+  },
+
+  setOverrides(ovr) {
+    for (const f of NORM_OVERRIDE_FIELDS) {
+      const el = document.getElementById('ovr-' + f);
+      if (el) el.value = (ovr && ovr[f]) || '';
+    }
+  },
+
+  clearOverrides() {
+    for (const f of NORM_OVERRIDE_FIELDS) {
+      const el = document.getElementById('ovr-' + f);
+      if (el) el.value = '';
+    }
+  },
+});
+</script>
+</body>
+</html>

@@ -168,10 +168,16 @@ class CoordinateStore:
                 "accuracy": result.get("accuracy", ""),
                 "geocoded_at": result.get("geocoded_at", ""),
             }
-            # Preserve match_code if present
+            # Preserve optional fields if present
             mc = result.get("match_code")
             if mc:
                 entry["match_code"] = mc
+            fa = result.get("formatted_address")
+            if fa:
+                entry["formatted_address"] = fa
+            mid = result.get("mapbox_id")
+            if mid:
+                entry["mapbox_id"] = mid
 
             self.set_provider(addr_key, "mapbox", entry)
             imported += 1
@@ -261,6 +267,12 @@ class CoordinateStore:
             mc = result.get("match_code")
             if mc:
                 entry["match_code"] = mc
+            fa = result.get("formatted_address")
+            if fa:
+                entry["formatted_address"] = fa
+            mid = result.get("mapbox_id")
+            if mid:
+                entry["mapbox_id"] = mid
             self.set_provider(addr, "mapbox", entry)
             added += 1
         return added

@@ -1,7 +1,7 @@
 # Address Normalization Strategy — Phase 0
 
 **Created:** 2026-02-25
-**Status:** Approved
+**Status:** Implemented — v019 active.
 **Priority:** #1 — blocks all downstream work (parcels, party grouping, app reorg)
 
 ---
@@ -64,7 +64,7 @@ This is the single path every address follows, regardless of source:
 | Brand matching | `brands/match.py` | Contract (STREET→ST) | 12 entries | Strips prefix |
 | GeoWarehouse | `cleo/geowarehouse/address.py` | None (raw MPAC) | None | None |
 | Parcel harvester | `cleo/parcels/harvester.py` | Contract (STREET→ST) | None | Strips unit/apt |
-| Address expander | `cleo/extract/address_expander.py` | None | None | None |
+| Address expander | `cleo/extract/address_expander.py` (legacy — replaced by `cleo/expand/expander.py`) | None | None | None |
 
 Property dedup **expands** abbreviations while brand matching and parcel harvester **contract** them. They normalize in opposite directions. The same address can produce different canonical forms depending on which code path touches it.
 
@@ -243,6 +243,12 @@ class AddressCategory(str, Enum):
     MAILING = "mailing"                   # GW owner mailing address — geocoded, not on main map
 ```
 
+> **Implementation note:** The final implementation uses two separate fields instead of a single `AddressCategory`:
+> - `category`: street_address, no_street_number, legal_description, po_box, empty, corporate_seller, corporate_buyer, brand
+> - `address_scope`: ontario, canadian, international, unknown
+>
+> This provides finer-grained classification than the original single-enum proposal.
+
 ### Where each category goes
 
 | Category | Geocode? | Main Map? | Ownership Map (future)? | Property Registry? |
@@ -363,7 +369,9 @@ The steps follow the pipeline order. Each step builds the next piece of the chai
 
 ---
 
-### Step 1: Audit current state (read-only, no risk)
+### Step 1: Audit current state (read-only, no risk) — DONE
+
+> `scripts/audit_addresses.py` exists and was used to establish baseline metrics.
 
 Build `scripts/audit_addresses.py` that scans every address in the system and reports baseline metrics. This tells us where the biggest wins are before we write any normalization code.
 
@@ -388,7 +396,9 @@ Build `scripts/audit_addresses.py` that scans every address in the system and re
 
 ---
 
-### Step 2: Build `cleo/normalize.py` — Pipeline Stage 2 (NORMALIZE)
+### Step 2: Build `cleo/normalize.py` — Pipeline Stage 2 (NORMALIZE) — DONE
+
+> Implemented as `cleo/normalize/address.py` with three entry points: `normalize_from_fields()`, `normalize_from_string()`, `normalize_from_mpac()`.
 
 The canonical normalization module. Every module that touches addresses imports from here. No more local abbreviation dicts or city alias tables elsewhere.
 
@@ -418,7 +428,9 @@ normalize_mpac(mpac_address: str, municipality: str,
 
 ---
 
-### Step 3: Build `data/municipalities.json` — City source of truth
+### Step 3: Build `data/municipalities.json` — City source of truth — DONE
+
+> `data/municipalities.json` contains 414 lower/single-tier AMO municipalities. `cleo/normalize/municipalities.py` provides `is_official()`, `get_canonical()`, `get_info()`. 263 city aliases wired in. Coverage: 100% of 15,805 RT records (80.1% official, 19.9% alias, 0.1% empty, 0 unknown).
 
 The authoritative reference for city resolution. Three tiers:
 
@@ -434,7 +446,9 @@ Cities not in Tier 1 or Tier 2 get flagged with count and sample addresses. CLI 
 
 ---
 
-### Step 4: Build golden test set — `tests/test_normalize.py`
+### Step 4: Build golden test set — `tests/test_normalize.py` — NOT DONE
+
+> No `tests/test_normalize.py` exists yet. Normalization has been validated through sandbox/diff/promote cycles but lacks a formal regression test suite.
 
 100+ test cases covering every edge case observed in the data. This becomes the regression safety net — every normalization change must pass this suite.
 
@@ -450,9 +464,13 @@ Categories:
 
 ---
 
-### Step 5: Build the Address Package — Pipeline Stage 3 (EXPAND)
+### Step 5: Build the Address Package — Pipeline Stage 3 (EXPAND) — DONE
 
-Update `cleo/extract/address_expander.py` to output **packages** instead of flat lists.
+> Implemented in `cleo/expand/expander.py`. Expand stage at v004 with compound splitting, decomposed fields, postal codes in canonical. 29,247 records produce 64,244 address entries.
+
+**Note:** This step is now implemented in `cleo/expand/expander.py` (not the legacy `cleo/extract/address_expander.py`).
+
+Update the expander to output **packages** instead of flat lists.
 
 **Before (current):**
 ```python
@@ -481,7 +499,9 @@ The key rule: **one package = one property**. All aliases in a package resolve t
 
 ---
 
-### Step 6: Rewire geocoding — Pipeline Stage 4 (GEOCODE)
+### Step 6: Rewire geocoding — Pipeline Stage 4 (GEOCODE) — NOT DONE
+
+> Next task after cleanup. The unified coordinate store exists (`data/coordinates.json`, ~50K entries) but the geocode collector has not been rewired to accept address packages from the expand stage.
 
 Update `cleo/geocode/collector.py` to:
 - Accept `AddressPackage` objects (not raw strings)
@@ -493,7 +513,9 @@ The geocode cache key is still the address string, but each package's aliases al
 
 ---
 
-### Step 7: Rewire parcel harvester — Pipeline Stage 5 (PARCEL LOOKUP)
+### Step 7: Rewire parcel harvester — Pipeline Stage 5 (PARCEL LOOKUP) — IN PROGRESS
+
+> `cleo/parcels/` module exists with registry, client, harvester, store, spatial index, matcher, and enrichment. Municipal ArcGIS (5 Tier 1 cities) and provincial parcel queries both working. Not yet rewired to consume normalized/expanded address packages.
 
 Flip the priority in `cleo/parcels/harvester.py`:
 
@@ -510,7 +532,9 @@ The spatial query infrastructure already exists in the harvester. This is mostly
 
 ---
 
-### Step 8: Rewire property registry — Pipeline Stage 6 (COMBINE)
+### Step 8: Rewire property registry — Pipeline Stage 6 (COMBINE) — PARTIALLY DONE
+
+> Property registry reads expanded data. Alias storage and category-based filtering not yet implemented.
 
 Update `cleo/properties/registry.py` to:
 - Store `aliases` on every property record
@@ -522,7 +546,9 @@ Update `cleo/properties/registry.py` to:
 
 ---
 
-### Step 9: Rewire remaining consumers
+### Step 9: Rewire remaining consumers — NOT DONE
+
+> Brand matching, party normalization, GeoWarehouse address parsing, and web app search have not been rewired to use the canonical normalize module.
 
 Replace local normalization with imports from `cleo/normalize.py`:
 
@@ -533,10 +559,12 @@ Replace local normalization with imports from `cleo/normalize.py`:
 
 ---
 
-### Step 10: Re-run pipelines and measure
+### Step 10: Re-run pipelines and measure — NOT DONE
+
+> Dependent on Steps 6-9 completing first.
 
 Run the full pipeline end-to-end with the new normalization:
-1. Re-extract (`cleo extract --sandbox`, `--diff`, `--promote`)
+1. Re-expand (`cleo expand --sandbox`, `--diff`, `--promote`)
 2. Re-geocode (all aliases in packages)
 3. Re-run parcel lookups (spatial-first)
 4. Re-build property registry (`cleo properties`) with aliases and categories
@@ -579,7 +607,7 @@ Once Phase 0 is solid:
 - `tests/test_normalize.py` — Step 4: golden test set (100+ edge cases)
 
 ### Modified files (by pipeline stage)
-- `cleo/extract/address_expander.py` — Step 5: output `AddressPackage` with aliases
+- `cleo/expand/expander.py` — Step 5: compound splitting and canonical building (replaces legacy `cleo/extract/address_expander.py`)
 - `cleo/geocode/collector.py` — Step 6: accept packages, geocode all aliases, carry categories
 - `cleo/parcels/harvester.py` — Step 7: spatial-first parcel lookup, address-string fallback
 - `cleo/properties/registry.py` — Step 8: store aliases + categories, merge packages

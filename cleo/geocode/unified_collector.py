@@ -1,11 +1,10 @@
 """Unified address collector — gathers geocodable addresses from all sources.
 
-Collects addresses from:
-  Priority 1: RT property addresses (from extracted/active/*.json)
-  Priority 1: GW property addresses (from gw_parsed/active/*.json)
-  Priority 2: Brand store addresses (from brands/data/*.json)
-  Priority 3: RT buyer/seller addresses (from extracted/active/*.json)
-  Priority 3: GW owner mailing addresses (from gw_parsed/active/*.json)
+Collects from expanded pipeline (preferred, all sources merged):
+  data/expanded/active/*.json — RT, brand, and GW addresses with skip_geocode flags
+
+Legacy fallback (if no expanded data):
+  extracted/active/*.json, gw_parsed/active/*.json, brands/data/*.json
 """
 
 from __future__ import annotations
@@ -16,10 +15,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from cleo.geocode.collector import collect_addresses as collect_rt_addresses_raw
-from cleo.geowarehouse.address import parse_mpac_address
-
 logger = logging.getLogger(__name__)
+
+# Role → priority mapping
+_ROLE_PRIORITY = {
+    "property": 1,
+    "store": 2,
+    "seller": 3,
+    "buyer": 3,
+    "owner_address": 3,
+}
+
+# Source prefix → source label
+_SOURCE_LABELS = {
+    "RT": "rt",
+    "GW": "gw",
+    "BR": "brand",
+}
 
 
 @dataclass
@@ -31,15 +43,19 @@ class AddressRef:
     roles: list[str] = field(default_factory=list)  # e.g. ["property", "seller"]
 
 
-def collect_all(
-    extracted_dir: Optional[Path] = None,
-    reviews_path: Optional[Path] = None,
-    gw_parsed_dir: Optional[Path] = None,
-    brands_data_dir: Optional[Path] = None,
-) -> dict[str, AddressRef]:
-    """Collect geocodable addresses from all sources.
+def _detect_source(record_id: str) -> str:
+    """Detect source label from record ID prefix."""
+    for prefix, label in _SOURCE_LABELS.items():
+        if record_id.startswith(prefix):
+            return label
+    return "unknown"
 
-    Returns dict keyed by normalized (uppercased) address string.
+
+def collect_from_expanded(expanded_dir: Path) -> dict[str, AddressRef]:
+    """Collect geocodable addresses from expanded pipeline output.
+
+    Reads all expanded JSON files and collects non-skipped canonical
+    addresses with their roles and source types.
     """
     all_addresses: dict[str, AddressRef] = {}
 
@@ -50,7 +66,100 @@ def collect_all(
         if key not in all_addresses:
             all_addresses[key] = AddressRef(address=key, priority=priority)
         ref = all_addresses[key]
-        # Keep the highest priority (lowest number)
+        if priority < ref.priority:
+            ref.priority = priority
+        if source not in ref.sources:
+            ref.sources.append(source)
+        if role not in ref.roles:
+            ref.roles.append(role)
+
+    stats = {"property": 0, "seller": 0, "buyer": 0, "owner": 0, "alt": 0, "skipped": 0}
+
+    for f in sorted(expanded_dir.glob("*.json")):
+        if f.stem == "_meta":
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+
+        source = _detect_source(f.stem)
+
+        for role in ("property", "seller", "buyer", "owner_address"):
+            block = data.get(role)
+            if not block:
+                continue
+            priority = _ROLE_PRIORITY.get(role, 3)
+            # Brands: property addresses get priority 2
+            if source == "brand" and role == "property":
+                priority = 2
+            for addr in block.get("addresses", []):
+                if addr.get("skip_geocode"):
+                    stats["skipped"] += 1
+                    continue
+                canonical = addr.get("canonical", "")
+                if canonical:
+                    _add(canonical, priority=priority, source=source, role=role)
+                    if role == "property":
+                        stats["property"] += 1
+                    elif role == "owner_address":
+                        stats["owner"] += 1
+                    else:
+                        stats[role] = stats.get(role, 0) + 1
+
+        for alt in data.get("property_alt", []):
+            for addr in alt.get("addresses", []):
+                if addr.get("skip_geocode"):
+                    stats["skipped"] += 1
+                    continue
+                canonical = addr.get("canonical", "")
+                if canonical:
+                    priority = 2 if source == "brand" else 1
+                    _add(canonical, priority=priority, source=source, role="property_alt")
+                    stats["alt"] += 1
+
+    logger.info(
+        "Expanded: %d property, %d seller, %d buyer, %d owner, %d alt, %d skipped",
+        stats["property"], stats["seller"], stats["buyer"],
+        stats["owner"], stats["alt"], stats["skipped"],
+    )
+    logger.info("Total unique addresses collected: %d", len(all_addresses))
+
+    return all_addresses
+
+
+def collect_all(
+    extracted_dir: Optional[Path] = None,
+    reviews_path: Optional[Path] = None,
+    gw_parsed_dir: Optional[Path] = None,
+    brands_data_dir: Optional[Path] = None,
+    expanded_dir: Optional[Path] = None,
+) -> dict[str, AddressRef]:
+    """Collect geocodable addresses from all sources.
+
+    If expanded_dir is provided and exists, collects from the expanded
+    pipeline (which already includes RT, brand, and GW). Otherwise falls
+    back to legacy extracted + GW + brand collection.
+
+    Returns dict keyed by normalized (uppercased) address string.
+    """
+    # Prefer expanded pipeline — it has all sources merged with skip_geocode flags
+    if expanded_dir and expanded_dir.is_dir():
+        return collect_from_expanded(expanded_dir)
+
+    # Legacy fallback: collect from extracted + GW + brands separately
+    from cleo.geocode.collector import collect_addresses as collect_rt_addresses_raw
+    from cleo.geowarehouse.address import parse_mpac_address
+
+    all_addresses: dict[str, AddressRef] = {}
+
+    def _add(addr: str, priority: int, source: str, role: str) -> None:
+        key = addr.strip().upper()
+        if not key:
+            return
+        if key not in all_addresses:
+            all_addresses[key] = AddressRef(address=key, priority=priority)
+        ref = all_addresses[key]
         if priority < ref.priority:
             ref.priority = priority
         if source not in ref.sources:
@@ -90,7 +199,6 @@ def collect_all(
             except (json.JSONDecodeError, OSError):
                 continue
 
-            # GW property address (Priority 1)
             site = data.get("site_structure", {})
             property_address = site.get("property_address", "")
             municipality = site.get("municipality", "")
@@ -113,13 +221,8 @@ def collect_all(
                     _add(geocodable, priority=1, source="gw", role="property")
                     gw_stats["property"] += 1
 
-            # GW owner mailing address (Priority 3)
             owner_addr = site.get("owner_mailing_address", "").strip()
             if owner_addr:
-                # Owner mailing addresses are already formatted as a single
-                # line like "12994 KEELE ST SUITE 6 KING CITY ON L7B 1H8".
-                # We add ", CANADA" will be handled by the geocodio client.
-                # For the store key, use as-is (uppercased).
                 _add(owner_addr, priority=3, source="gw", role="owner")
                 gw_stats["owner"] += 1
 
@@ -147,11 +250,7 @@ def collect_all(
                 brand_count += 1
 
     logger.info("Brand: %d store addresses", brand_count)
-
-    logger.info(
-        "Total unique addresses collected: %d",
-        len(all_addresses),
-    )
+    logger.info("Total unique addresses collected: %d", len(all_addresses))
 
     return all_addresses
 

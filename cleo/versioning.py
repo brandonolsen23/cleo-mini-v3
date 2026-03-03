@@ -153,7 +153,21 @@ class VersionedStore:
     # -- Diff ----------------------------------------------------------------
 
     def _strip_volatile(self, data: Dict) -> Dict:
-        return {k: v for k, v in data.items() if k not in self.volatile_fields}
+        """Strip volatile fields at any nesting level."""
+        result = {}
+        for k, v in data.items():
+            if k in self.volatile_fields:
+                continue
+            if isinstance(v, dict):
+                result[k] = self._strip_volatile(v)
+            elif isinstance(v, list):
+                result[k] = [
+                    self._strip_volatile(item) if isinstance(item, dict) else item
+                    for item in v
+                ]
+            else:
+                result[k] = v
+        return result
 
     @staticmethod
     def _flatten(data: Any, prefix: str = "") -> Dict[str, Any]:

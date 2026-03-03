@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import MapGL, { Source, Layer, Popup } from "react-map-gl/mapbox";
 import type { MapRef, MapMouseEvent } from "react-map-gl/mapbox";
 import type { LayerProps } from "react-map-gl/mapbox";
-import type { FeatureCollection, Point, Polygon, MultiPolygon } from "geojson";
+import type { FeatureCollection } from "geojson";
 import type { GeoJSONSource } from "mapbox-gl";
-import { MagnifyingGlass, SlidersHorizontal, CaretDown, CaretUp, X } from "@phosphor-icons/react";
-import { useProperties } from "../../api/properties";
-import type { PropertySummary } from "../../types/property";
-import PropertyPopup from "./PropertyPopup";
-import MultiSelect from "../shared/MultiSelect";
-import type { MultiSelectOption } from "../shared/MultiSelect";
-import BrandBadge, { BRAND_CATEGORY, CATEGORY_COLORS, CATEGORY_LABELS, type Category } from "../shared/BrandBadge";
+import type { Point } from "geojson";
+import { SlidersHorizontal, CaretDown, CaretUp, X } from "@phosphor-icons/react";
+import { useParcelFilters } from "../../api/parcels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -19,33 +15,88 @@ import { Badge } from "@/components/ui/badge";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string;
 
+// ---------------------------------------------------------------------------
+// Layer definitions
+// ---------------------------------------------------------------------------
+
+// Parcel polygons from the registry — colored by whether they have transactions
+const registryParcelFillLayer: LayerProps = {
+  id: "registry-parcel-fill",
+  type: "fill",
+  source: "registry-parcels",
+  filter: ["==", ["geometry-type"], "Polygon"],
+  paint: {
+    "fill-color": [
+      "case",
+      ["get", "has_transactions"],
+      "#0d9488", // teal-600 for parcels with transactions
+      "#f59e0b", // amber-500 for branded-only
+    ],
+    "fill-opacity": 0.2,
+  },
+};
+
+const registryParcelLineLayer: LayerProps = {
+  id: "registry-parcel-line",
+  type: "line",
+  source: "registry-parcels",
+  filter: ["==", ["geometry-type"], "Polygon"],
+  paint: {
+    "line-color": [
+      "case",
+      ["get", "has_transactions"],
+      "#0f766e", // teal-700
+      "#d97706", // amber-600
+    ],
+    "line-width": 1.5,
+    "line-opacity": 0.7,
+  },
+};
+
+// Point fallback for parcels without polygon geometry
+const registryPointLayer: LayerProps = {
+  id: "registry-point",
+  type: "circle",
+  source: "registry-parcels",
+  filter: ["==", ["geometry-type"], "Point"],
+  paint: {
+    "circle-color": [
+      "case",
+      ["get", "has_transactions"],
+      "#0d9488",
+      "#f59e0b",
+    ],
+    "circle-radius": 6,
+    "circle-stroke-width": 1.5,
+    "circle-stroke-color": "#ffffff",
+  },
+};
+
+// Cluster layers for centroid points at low zoom
 const clusterLayer: LayerProps = {
   id: "clusters",
   type: "circle",
-  source: "properties",
+  source: "registry-centroids",
   filter: ["has", "point_count"],
   paint: {
     "circle-color": [
       "step",
       ["get", "point_count"],
-      "#a8a29e", // stone-400: < 10
+      "#a8a29e",
       10,
-      "#78716c", // stone-500: 10-50
+      "#78716c",
       50,
-      "#57534e", // stone-600: 50-200
+      "#57534e",
       200,
-      "#44403c", // stone-700: 200+
+      "#44403c",
     ],
     "circle-radius": [
       "step",
       ["get", "point_count"],
-      18, // < 10
-      10,
-      24, // 10-50
-      50,
-      30, // 50-200
-      200,
-      36, // 200+
+      18,
+      10, 24,
+      50, 30,
+      200, 36,
     ],
   },
 };
@@ -53,7 +104,7 @@ const clusterLayer: LayerProps = {
 const clusterCountLayer: LayerProps = {
   id: "cluster-count",
   type: "symbol",
-  source: "properties",
+  source: "registry-centroids",
   filter: ["has", "point_count"],
   layout: {
     "text-field": "{point_count_abbreviated}",
@@ -64,112 +115,87 @@ const clusterCountLayer: LayerProps = {
   },
 };
 
-// Radix step 8 hex values for pin coloring
-const PIN_STATUS_COLORS: [string, string][] = [
-  ["not_started", "#bcbbb5"],
-  ["attempted_contact", "#5eb1ef"],
-  ["interested", "#3db9cf"],
-  ["listed", "#53b9ab"],
-  ["active_deal", "#53b9ab"],
-  ["in_negotiation", "#56ba9f"],
-  ["under_contract", "#65ba74"],
-  ["closed_won", "#8db654"],
-  ["lost_cancelled", "#9b9ef0"],
-  ["do_not_contact", "#ec8e7b"],
-];
-
-const unclusteredPointLayer: LayerProps = {
-  id: "unclustered-point",
+const unclusteredCentroidLayer: LayerProps = {
+  id: "unclustered-centroid",
   type: "circle",
-  source: "properties",
+  source: "registry-centroids",
   filter: ["!", ["has", "point_count"]],
   paint: {
     "circle-color": [
-      "match",
-      ["get", "pin_status"],
-      ...PIN_STATUS_COLORS.flat(),
-      "#bcbbb5", // fallback
-    ] as any,
-    "circle-radius": 7,
-    "circle-stroke-width": 2,
+      "case",
+      ["get", "has_transactions"],
+      "#0d9488",
+      "#f59e0b",
+    ],
+    "circle-radius": 6,
+    "circle-stroke-width": 1.5,
     "circle-stroke-color": "#ffffff",
   },
 };
 
-const parcelGroupRingLayer: LayerProps = {
-  id: "parcel-group-ring",
+// POI layers from Mapbox vector tiles
+const POI_ZOOM_THRESHOLD = 14;
+const POLYGON_ZOOM_THRESHOLD = 14;
+
+const poiLabelLayer: LayerProps = {
+  id: "poi-labels",
+  type: "symbol",
+  source: "composite",
+  "source-layer": "poi_label",
+  minzoom: POI_ZOOM_THRESHOLD,
+  filter: [
+    "match",
+    ["get", "class"],
+    ["shop", "restaurant", "fast_food", "bank", "fuel", "cafe", "bar", "pharmacy", "convenience", "supermarket", "car", "clothing", "hotel", "fitness_centre"],
+    true,
+    false,
+  ],
+  layout: {
+    "text-field": ["get", "name"],
+    "text-size": 11,
+    "text-anchor": "top",
+    "text-offset": [0, 0.8],
+    "icon-allow-overlap": false,
+    "text-allow-overlap": false,
+    "text-optional": true,
+  },
+  paint: {
+    "text-color": "#7c3aed",
+    "text-halo-color": "#ffffff",
+    "text-halo-width": 1.5,
+  },
+};
+
+const poiCircleLayer: LayerProps = {
+  id: "poi-circles",
   type: "circle",
-  source: "properties",
-  filter: ["all",
-    ["!", ["has", "point_count"]],
-    [">", ["get", "parcel_group_size"], 1],
+  source: "composite",
+  "source-layer": "poi_label",
+  minzoom: POI_ZOOM_THRESHOLD,
+  filter: [
+    "match",
+    ["get", "class"],
+    ["shop", "restaurant", "fast_food", "bank", "fuel", "cafe", "bar", "pharmacy", "convenience", "supermarket", "car", "clothing", "hotel", "fitness_centre"],
+    true,
+    false,
   ],
   paint: {
-    "circle-radius": 12,
-    "circle-color": "transparent",
-    "circle-stroke-width": 2,
-    "circle-stroke-color": "#d97706", // amber-600, matches parcel boundary colour
+    "circle-radius": 4,
+    "circle-color": "#7c3aed",
+    "circle-stroke-width": 1.5,
+    "circle-stroke-color": "#ffffff",
+    "circle-opacity": 0.7,
   },
 };
 
-const footprintFillLayer: LayerProps = {
-  id: "footprint-fill",
-  type: "fill",
-  source: "footprints",
-  paint: {
-    "fill-color": [
-      "case",
-      ["has", "matched_prop"],
-      "#3b82f6", // blue for matched
-      "#9ca3af", // gray for unmatched
-    ],
-    "fill-opacity": 0.25,
-  },
-};
-
-const footprintLineLayer: LayerProps = {
-  id: "footprint-line",
-  type: "line",
-  source: "footprints",
-  paint: {
-    "line-color": "#1e40af",
-    "line-width": 1.5,
-    "line-opacity": 0.7,
-  },
-};
-
-const parcelFillLayer: LayerProps = {
-  id: "parcel-fill",
-  type: "fill",
-  source: "parcels",
-  paint: {
-    "fill-color": "#f59e0b", // amber
-    "fill-opacity": 0.15,
-  },
-};
-
-const parcelLineLayer: LayerProps = {
-  id: "parcel-line",
-  type: "line",
-  source: "parcels",
-  paint: {
-    "line-color": "#d97706", // amber-600
-    "line-width": 1.5,
-    "line-opacity": 0.7,
-  },
-};
-
-const EMPTY_FC: FeatureCollection<Polygon | MultiPolygon> = {
+const EMPTY_FC: FeatureCollection = {
   type: "FeatureCollection",
   features: [],
 };
 
-const FOOTPRINT_ZOOM_THRESHOLD = 15;
-
-function parsePriceNumeric(price: string): number {
-  const cleaned = price.replace(/[^0-9.]/g, "");
-  return cleaned ? parseFloat(cleaned) : 0;
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const MAP_VIEW_KEY = "cleo-map-view";
 
@@ -181,101 +207,57 @@ function getSavedView() {
   return null;
 }
 
+function formatPrice(price: number | null): string {
+  if (price == null) return "";
+  if (price >= 1_000_000) return `$${(price / 1_000_000).toFixed(1)}M`;
+  if (price >= 1_000) return `$${Math.round(price / 1_000)}K`;
+  return `$${price}`;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export default function MapPage() {
-  const { data: properties, loading, error } = useProperties();
+  const navigate = useNavigate();
   const mapRef = useRef<MapRef>(null);
-  const [selected, setSelected] = useState<PropertySummary | null>(null);
-  const [parcelPopup, setParcelPopup] = useState<{
+  const [searchParams, setSearchParams] = useSearchParams();
+  const savedView = useRef(getSavedView());
+  const { data: filtersData } = useParcelFilters();
+
+  // Popup state
+  const [popupData, setPopupData] = useState<{
     lng: number;
     lat: number;
-    parcel_id: string | null;
-    municipality: string;
-    area_sqm: number | null;
-    properties: string[];
+    arn: string;
+    pid: string | null;
+    address: string;
+    city: string | null;
     brands: string[];
+    transaction_count: number;
+    latest_price: number | null;
+    latest_date: string | null;
+    sources: string[];
+    zoning: string | null;
   } | null>(null);
-  const [searchParams, setSearchParams] = useSearchParams();
 
-  const savedView = useRef(getSavedView());
-
-  // --- URL param state ---
-  const searchText = searchParams.get("q") || "";
-  const yearFrom = searchParams.get("yf") || "";
-  const yearTo = searchParams.get("yt") || "";
+  // URL param state
+  const cityFilter = searchParams.get("city") || "";
+  const brandFilter = searchParams.get("brand") || "";
+  const txnsFilter = searchParams.get("txns") || "";
   const priceMin = searchParams.get("pmin") || "";
   const priceMax = searchParams.get("pmax") || "";
-  const popMin = searchParams.get("popmin") || "";
-  const popMax = searchParams.get("popmax") || "";
-  const bsMin = searchParams.get("bsmin") || "";
-  const bsMax = searchParams.get("bsmax") || "";
-  const acMin = searchParams.get("acmin") || "";
-  const acMax = searchParams.get("acmax") || "";
-  const txnsOnly = searchParams.get("txns") === "1";
-  const noTxns = searchParams.get("notxns") === "1";
-  const contactOnly = searchParams.get("contact") === "1";
-  const phoneOnly = searchParams.get("phone") === "1";
-  const selectedCategories = useMemo(() => {
-    const raw = searchParams.get("cat");
-    return raw ? raw.split(",").filter(Boolean) : [];
-  }, [searchParams]);
-  const selectedBrands = useMemo(() => {
-    const raw = searchParams.get("brands");
-    return raw ? raw.split(",").filter(Boolean) : [];
-  }, [searchParams]);
+  const showPOIs = searchParams.get("poi") === "1";
 
-  // --- Footprint state ---
-  const showFootprints = searchParams.get("fp") === "1";
-  const [footprintData, setFootprintData] = useState<FeatureCollection<Polygon | MultiPolygon>>(EMPTY_FC);
-  const [currentZoom, setCurrentZoom] = useState(6);
-  const footprintFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const fetchFootprints = useCallback((map: MapRef) => {
-    if (!showFootprints) return;
-    const zoom = map.getZoom();
-    if (zoom < FOOTPRINT_ZOOM_THRESHOLD) {
-      setFootprintData(EMPTY_FC);
-      return;
-    }
-    const bounds = map.getBounds();
-    if (!bounds) return;
-    const { _sw, _ne } = bounds as any;
-    const south = _sw.lat;
-    const west = _sw.lng;
-    const north = _ne.lat;
-    const east = _ne.lng;
-    fetch(`/api/footprints/geojson?south=${south}&west=${west}&north=${north}&east=${east}`)
-      .then((r) => r.json())
-      .then((data) => setFootprintData(data))
-      .catch(() => {});
-  }, [showFootprints]);
-
-  // --- Parcel state ---
-  const showParcels = searchParams.get("pcl") === "1";
-  const [parcelData, setParcelData] = useState<FeatureCollection<Polygon | MultiPolygon>>(EMPTY_FC);
-  const parcelFetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const fetchParcels = useCallback((map: MapRef) => {
-    if (!showParcels) return;
-    const zoom = map.getZoom();
-    if (zoom < FOOTPRINT_ZOOM_THRESHOLD) {
-      setParcelData(EMPTY_FC);
-      return;
-    }
-    const bounds = map.getBounds();
-    if (!bounds) return;
-    const { _sw, _ne } = bounds as any;
-    const south = _sw.lat;
-    const west = _sw.lng;
-    const north = _ne.lat;
-    const east = _ne.lng;
-    fetch(`/api/parcels/geojson?south=${south}&west=${west}&north=${north}&east=${east}`)
-      .then((r) => r.json())
-      .then((data) => setParcelData(data))
-      .catch(() => {});
-  }, [showParcels]);
-
-  const hasFilters = !!(yearFrom || yearTo || priceMin || priceMax || popMin || popMax || bsMin || bsMax || acMin || acMax || txnsOnly || noTxns || contactOnly || phoneOnly || selectedCategories.length || selectedBrands.length);
+  const hasFilters = !!(cityFilter || brandFilter || txnsFilter || priceMin || priceMax);
   const [filtersOpen, setFiltersOpen] = useState(hasFilters);
+  const [currentZoom, setCurrentZoom] = useState(6);
+
+  // Parcel GeoJSON data (polygons + point fallbacks)
+  const [parcelData, setParcelData] = useState<FeatureCollection>(EMPTY_FC);
+  const [parcelLoading, setParcelLoading] = useState(false);
+  const [parcelCount, setParcelCount] = useState(0);
+  const fetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -291,274 +273,148 @@ export default function MapPage() {
     [setSearchParams]
   );
 
-  // --- Filter options ---
-  const categoryOptions: MultiSelectOption[] = useMemo(
-    () =>
-      (Object.keys(CATEGORY_LABELS) as Category[]).map((key) => ({
-        value: key,
-        label: CATEGORY_LABELS[key],
-        color: CATEGORY_COLORS[key].split(" ")[0],
-      })),
-    []
-  );
+  // Fetch parcel polygons when map moves or filters change
+  const fetchParcels = useCallback((map: MapRef) => {
+    const bounds = map.getBounds();
+    if (!bounds) return;
 
-  const brandOptions: MultiSelectOption[] = useMemo(() => {
-    const brandsInData = new Set(properties.flatMap((p) => p.brands));
-    let entries = Object.entries(BRAND_CATEGORY).filter(([b]) => brandsInData.has(b));
-    if (selectedCategories.length > 0) {
-      entries = entries.filter(([, cat]) => selectedCategories.includes(cat));
-    }
-    return entries
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([brand, cat]) => ({
-        value: brand,
-        label: brand,
-        color: CATEGORY_COLORS[cat].split(" ")[0],
-      }));
-  }, [properties, selectedCategories]);
+    const { _sw, _ne } = bounds as any;
+    const qs = new URLSearchParams();
+    qs.set("south", _sw.lat.toFixed(5));
+    qs.set("west", _sw.lng.toFixed(5));
+    qs.set("north", _ne.lat.toFixed(5));
+    qs.set("east", _ne.lng.toFixed(5));
+    if (cityFilter) qs.set("city", cityFilter);
+    if (brandFilter) qs.set("brand", brandFilter);
+    if (txnsFilter === "yes") qs.set("has_transactions", "true");
+    if (txnsFilter === "no") qs.set("has_transactions", "false");
+    if (priceMin) qs.set("min_price", priceMin);
+    if (priceMax) qs.set("max_price", priceMax);
 
-  // --- Geocoded + filtered ---
-  const geocoded = useMemo(
-    () => properties.filter((p) => p.lat !== null && p.lng !== null),
-    [properties]
-  );
+    setParcelLoading(true);
+    fetch(`/api/parcels/registry/geojson?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((data: FeatureCollection) => {
+        setParcelData(data);
+        setParcelCount(data.features?.length ?? 0);
+        setParcelLoading(false);
+      })
+      .catch(() => setParcelLoading(false));
+  }, [cityFilter, brandFilter, txnsFilter, priceMin, priceMax]);
 
-  const filtered = useMemo(() => {
-    const q = searchText.toLowerCase();
-    const hasCat = selectedCategories.length > 0;
-    const hasBrand = selectedBrands.length > 0;
-    const yf = yearFrom ? parseInt(yearFrom, 10) : NaN;
-    const yt = yearTo ? parseInt(yearTo, 10) : NaN;
-    const pmin = priceMin ? parseFloat(priceMin) : NaN;
-    const pmax = priceMax ? parseFloat(priceMax) : NaN;
-    const popmin = popMin ? parseInt(popMin, 10) : NaN;
-    const popmax = popMax ? parseInt(popMax, 10) : NaN;
-    const bsmin = bsMin ? parseFloat(bsMin) : NaN;
-    const bsmax = bsMax ? parseFloat(bsMax) : NaN;
-    const acmin = acMin ? parseFloat(acMin) : NaN;
-    const acmax = acMax ? parseFloat(acMax) : NaN;
+  // Centroid points for clustering at low zoom
+  const centroidGeojson = useMemo<FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: (parcelData.features || [])
+      .filter((f) => f.properties)
+      .map((f) => {
+        const p = f.properties!;
+        // Use centroid from properties or compute from geometry
+        let lng: number, lat: number;
+        if (f.geometry.type === "Point") {
+          [lng, lat] = f.geometry.coordinates as [number, number];
+        } else if (f.geometry.type === "Polygon") {
+          const ring = (f.geometry as GeoJSON.Polygon).coordinates[0];
+          lng = ring.reduce((s, c) => s + c[0], 0) / ring.length;
+          lat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
+        } else {
+          return null;
+        }
+        return {
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [lng, lat] },
+          properties: {
+            arn: p.arn,
+            pid: p.pid,
+            address: p.address,
+            city: p.city,
+            brands: p.brands,
+            brand_count: p.brand_count,
+            transaction_count: p.transaction_count,
+            latest_price: p.latest_price,
+            latest_date: p.latest_date,
+            has_transactions: p.has_transactions,
+            sources: p.sources,
+            zoning: p.zoning,
+          },
+        };
+      })
+      .filter(Boolean) as FeatureCollection["features"],
+  }), [parcelData]);
 
-    return geocoded.filter((p) => {
-      if (q && !(p._search_text ?? "").includes(q)) return false;
-
-      if (!isNaN(yf) || !isNaN(yt)) {
-        const year = parseInt(p.latest_sale_year, 10);
-        if (isNaN(year)) return false;
-        if (!isNaN(yf) && year < yf) return false;
-        if (!isNaN(yt) && year > yt) return false;
-      }
-
-      if (!isNaN(pmin) || !isNaN(pmax)) {
-        const price = parsePriceNumeric(p.latest_sale_price);
-        if (!price) return false;
-        if (!isNaN(pmin) && price < pmin) return false;
-        if (!isNaN(pmax) && price > pmax) return false;
-      }
-
-      if (!isNaN(popmin) || !isNaN(popmax)) {
-        const pop = p.population;
-        if (pop == null) return false;
-        if (!isNaN(popmin) && pop < popmin) return false;
-        if (!isNaN(popmax) && pop > popmax) return false;
-      }
-
-      if (!isNaN(bsmin) || !isNaN(bsmax)) {
-        const raw = p.building_sf?.replace(/[^0-9.]/g, "");
-        if (!raw) return false;
-        const val = parseFloat(raw);
-        if (isNaN(val)) return false;
-        if (!isNaN(bsmin) && val < bsmin) return false;
-        if (!isNaN(bsmax) && val > bsmax) return false;
-      }
-
-      if (!isNaN(acmin) || !isNaN(acmax)) {
-        const raw = p.site_area?.replace(/[^0-9.]/g, "");
-        if (!raw) return false;
-        const val = parseFloat(raw);
-        if (isNaN(val)) return false;
-        if (!isNaN(acmin) && val < acmin) return false;
-        if (!isNaN(acmax) && val > acmax) return false;
-      }
-
-      if ((hasCat || hasBrand) && !p.brands.some(
-        (b) =>
-          (hasCat && selectedCategories.includes(BRAND_CATEGORY[b])) ||
-          (hasBrand && selectedBrands.includes(b))
-      )) return false;
-
-      if (txnsOnly && p.transaction_count === 0) return false;
-      if (noTxns && p.transaction_count > 0) return false;
-      if (contactOnly && !p.has_contact) return false;
-      if (phoneOnly && !p.has_phone) return false;
-
-      return true;
-    });
-  }, [geocoded, searchText, yearFrom, yearTo, priceMin, priceMax, popMin, popMax, bsMin, bsMax, acMin, acMax, selectedCategories, selectedBrands, txnsOnly, noTxns, contactOnly, phoneOnly]);
-
-  // Clear popup when the selected property gets filtered out
+  // Initial fetch and filter-change fetch
   useEffect(() => {
-    if (selected && !filtered.some((p) => p.prop_id === selected.prop_id)) {
-      setSelected(null);
-    }
-  }, [filtered, selected]);
-
-  // Fetch footprints when toggle is enabled
-  useEffect(() => {
-    if (showFootprints && mapRef.current) {
-      fetchFootprints(mapRef.current);
-    } else if (!showFootprints) {
-      setFootprintData(EMPTY_FC);
-    }
-  }, [showFootprints, fetchFootprints]);
-
-  // Fetch parcels when toggle is enabled
-  useEffect(() => {
-    if (showParcels && mapRef.current) {
+    if (mapRef.current) {
       fetchParcels(mapRef.current);
-    } else if (!showParcels) {
-      setParcelData(EMPTY_FC);
     }
-  }, [showParcels, fetchParcels]);
+  }, [fetchParcels]);
 
-  const geojson = useMemo<FeatureCollection>(
-    () => ({
-      type: "FeatureCollection",
-      features: filtered.map((p) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [p.lng!, p.lat!] },
-        properties: {
-          prop_id: p.prop_id,
-          pin_status: p.pin_status || "not_started",
-          parcel_id: p.parcel_id ?? null,
-          parcel_group_size: p.parcel_group_size ?? 1,
-        },
-      })),
-    }),
-    [filtered]
-  );
-
-  const propById = useMemo(() => {
-    const m: Record<string, PropertySummary> = {};
-    for (const p of filtered) m[p.prop_id] = p;
-    return m;
-  }, [filtered]);
-
-  const activeFilterCount = [
-    yearFrom || yearTo ? 1 : 0,
-    priceMin || priceMax ? 1 : 0,
-    popMin || popMax ? 1 : 0,
-    bsMin || bsMax ? 1 : 0,
-    acMin || acMax ? 1 : 0,
-    txnsOnly || noTxns ? 1 : 0,
-    contactOnly ? 1 : 0,
-    phoneOnly ? 1 : 0,
-    selectedCategories.length ? 1 : 0,
-    selectedBrands.length ? 1 : 0,
-  ].reduce((a, b) => a + b, 0);
+  const showPolygons = currentZoom >= POLYGON_ZOOM_THRESHOLD;
 
   const onClick = useCallback(
     (e: MapMouseEvent) => {
       const map = mapRef.current;
       if (!map) return;
 
-      // Check clusters first
-      const clusterFeatures = map.queryRenderedFeatures(e.point, {
-        layers: ["clusters"],
-      });
+      // Check clusters
+      const clusterFeatures = map.queryRenderedFeatures(e.point, { layers: ["clusters"] });
       if (clusterFeatures.length > 0) {
         const feature = clusterFeatures[0];
         const clusterId = feature.properties?.cluster_id;
-        const source = map.getSource("properties") as GeoJSONSource;
+        const source = map.getSource("registry-centroids") as GeoJSONSource;
         source.getClusterExpansionZoom(clusterId, (err: Error | null | undefined, zoom: number | null | undefined) => {
           if (err || zoom == null) return;
           const geom = feature.geometry as Point;
-          map.easeTo({
-            center: [geom.coordinates[0], geom.coordinates[1]],
-            zoom,
-          });
+          map.easeTo({ center: [geom.coordinates[0], geom.coordinates[1]], zoom });
         });
         return;
       }
 
-      // Check unclustered points (takes priority over parcel polygons)
-      const pointFeatures = map.queryRenderedFeatures(e.point, {
-        layers: ["unclustered-point"],
-      });
-      if (pointFeatures.length > 0) {
-        const propId = pointFeatures[0].properties?.prop_id;
-        const prop = propById[propId];
-        if (prop) {
-          setParcelPopup(null);
-          setSelected(prop);
-        }
-        return;
-      }
-
-      // Check parcel polygon clicks
+      // Check polygon clicks
       const parcelFeatures = map.queryRenderedFeatures(e.point, {
-        layers: ["parcel-fill"],
+        layers: ["registry-parcel-fill", "registry-point", "unclustered-centroid"],
       });
       if (parcelFeatures.length > 0) {
         const props = parcelFeatures[0].properties ?? {};
-        const pcl_id = props.pcl_id as string | undefined;
+        // Parse JSON arrays stored as strings in properties
+        let brands: string[] = [];
+        let sources: string[] = [];
+        try { brands = JSON.parse(props.brands || "[]"); } catch { brands = []; }
+        try { sources = JSON.parse(props.sources || "[]"); } catch { sources = []; }
 
-        // Find any property mapped to this parcel to fetch group details
-        const matchedProp = Object.values(propById).find(
-          (p) => p.parcel_id === pcl_id
-        );
-
-        if (matchedProp) {
-          fetch(`/api/properties/${matchedProp.prop_id}/parcel`)
-            .then((r) => r.ok ? r.json() : null)
-            .then((data) => {
-              if (!data) return;
-              setSelected(null);
-              setParcelPopup({
-                lng: e.lngLat.lng,
-                lat: e.lngLat.lat,
-                parcel_id: data.parcel_id,
-                municipality: data.municipality,
-                area_sqm: props.area_sqm ?? null,
-                properties: [matchedProp.prop_id, ...(data.parcel_group ?? [])],
-                brands: data.parcel_brands ?? [],
-              });
-            })
-            .catch(() => {});
-        }
+        setPopupData({
+          lng: e.lngLat.lng,
+          lat: e.lngLat.lat,
+          arn: props.arn || "",
+          pid: props.pid || null,
+          address: props.address || "",
+          city: props.city || null,
+          brands,
+          transaction_count: props.transaction_count ?? 0,
+          latest_price: props.latest_price ?? null,
+          latest_date: props.latest_date || null,
+          sources,
+          zoning: props.zoning || null,
+        });
+        return;
       }
+
+      // Click empty space — close popup
+      setPopupData(null);
     },
-    [propById]
+    []
   );
 
   if (!MAPBOX_TOKEN) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center max-w-md">
-          <h2 className="text-lg font-semibold text-foreground mb-2">
-            Mapbox token not configured
-          </h2>
+          <h2 className="text-lg font-semibold text-foreground mb-2">Mapbox token not configured</h2>
           <p className="text-sm text-muted-foreground">
             Add <code className="bg-muted px-1 rounded">VITE_MAPBOX_TOKEN</code> to{" "}
-            <code className="bg-muted px-1 rounded">frontend/.env</code> and restart the dev
-            server.
+            <code className="bg-muted px-1 rounded">frontend/.env</code> and restart the dev server.
           </p>
         </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Loading properties...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-sm text-destructive">Error: {error}</p>
       </div>
     );
   }
@@ -568,16 +424,6 @@ export default function MapPage() {
       {/* Filter panel */}
       <div className="absolute top-3 left-3 z-10 bg-background/95 backdrop-blur rounded-lg shadow-lg" style={{ maxWidth: 380 }}>
         <div className="px-3 py-2 flex items-center gap-2">
-          <div className="relative flex-1">
-            <MagnifyingGlass size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="Search..."
-              value={searchText}
-              onChange={(e) => updateParams({ q: e.target.value || null })}
-              className="pl-7 pr-3 py-1.5 w-full h-8 text-sm"
-            />
-          </div>
           <Button
             variant="outline"
             size="sm"
@@ -586,38 +432,46 @@ export default function MapPage() {
           >
             <SlidersHorizontal size={13} />
             Filters
-            {activeFilterCount > 0 && (
-              <Badge variant="secondary" className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none">
-                {activeFilterCount}
-              </Badge>
+            {hasFilters && (
+              <Badge variant="secondary" className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold leading-none">!</Badge>
             )}
             {filtersOpen ? <CaretUp size={12} /> : <CaretDown size={12} />}
           </Button>
           <span className="text-xs text-muted-foreground whitespace-nowrap">
-            {filtered.length.toLocaleString()}{(searchText || hasFilters) && ` / ${geocoded.length.toLocaleString()}`}
+            {parcelLoading ? "Loading..." : `${parcelCount.toLocaleString()} parcels`}
           </span>
         </div>
 
         {filtersOpen && (
           <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
-            {/* Year range */}
+            {/* City */}
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Year</span>
-              <Input
-                type="number"
-                placeholder="From"
-                value={yearFrom}
-                onChange={(e) => updateParams({ yf: e.target.value || null })}
-                className="px-2 py-1 w-20 h-7 text-sm"
-              />
-              <span className="text-muted-foreground text-xs">to</span>
-              <Input
-                type="number"
-                placeholder="To"
-                value={yearTo}
-                onChange={(e) => updateParams({ yt: e.target.value || null })}
-                className="px-2 py-1 w-20 h-7 text-sm"
-              />
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">City</span>
+              <select
+                value={cityFilter}
+                onChange={(e) => updateParams({ city: e.target.value || null })}
+                className="text-xs border rounded px-2 py-1 bg-background flex-1 h-7"
+              >
+                <option value="">All cities</option>
+                {filtersData?.cities.slice(0, 50).map((c) => (
+                  <option key={c.name} value={c.name}>{c.name} ({c.count.toLocaleString()})</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Brand */}
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Brand</span>
+              <select
+                value={brandFilter}
+                onChange={(e) => updateParams({ brand: e.target.value || null })}
+                className="text-xs border rounded px-2 py-1 bg-background flex-1 h-7"
+              >
+                <option value="">All brands</option>
+                {filtersData?.brands.slice(0, 100).sort((a, b) => a.name.localeCompare(b.name)).map((b) => (
+                  <option key={b.name} value={b.name}>{b.name} ({b.count})</option>
+                ))}
+              </select>
             </div>
 
             {/* Price range */}
@@ -641,132 +495,27 @@ export default function MapPage() {
               />
             </div>
 
-            {/* Population range */}
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Pop.</span>
-              <Input
-                type="number"
-                placeholder="Min"
-                value={popMin}
-                onChange={(e) => updateParams({ popmin: e.target.value || null })}
-                className="px-2 py-1 w-24 h-7 text-sm"
-              />
-              <span className="text-muted-foreground text-xs">to</span>
-              <Input
-                type="number"
-                placeholder="Max"
-                value={popMax}
-                onChange={(e) => updateParams({ popmax: e.target.value || null })}
-                className="px-2 py-1 w-24 h-7 text-sm"
-              />
-            </div>
-
-            {/* Building SF range */}
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Bldg SF</span>
-              <Input
-                type="number"
-                placeholder="Min"
-                value={bsMin}
-                onChange={(e) => updateParams({ bsmin: e.target.value || null })}
-                className="px-2 py-1 w-24 h-7 text-sm"
-              />
-              <span className="text-muted-foreground text-xs">to</span>
-              <Input
-                type="number"
-                placeholder="Max"
-                value={bsMax}
-                onChange={(e) => updateParams({ bsmax: e.target.value || null })}
-                className="px-2 py-1 w-24 h-7 text-sm"
-              />
-            </div>
-
-            {/* Acreage range */}
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Acres</span>
-              <Input
-                type="number"
-                step="0.01"
-                placeholder="Min"
-                value={acMin}
-                onChange={(e) => updateParams({ acmin: e.target.value || null })}
-                className="px-2 py-1 w-20 h-7 text-sm"
-              />
-              <span className="text-muted-foreground text-xs">to</span>
-              <Input
-                type="number"
-                step="0.01"
-                placeholder="Max"
-                value={acMax}
-                onChange={(e) => updateParams({ acmax: e.target.value || null })}
-                className="px-2 py-1 w-20 h-7 text-sm"
-              />
-            </div>
-
-            {/* Brand selects */}
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Brand</span>
-              <MultiSelect
-                options={categoryOptions}
-                selected={selectedCategories}
-                onChange={(vals) => updateParams({ cat: vals.length ? vals.join(",") : null })}
-                placeholder="Category"
-              />
-              <MultiSelect
-                options={brandOptions}
-                selected={selectedBrands}
-                onChange={(vals) => updateParams({ brands: vals.length ? vals.join(",") : null })}
-                placeholder="Name"
-              />
-            </div>
-
-            {/* Checkboxes + clear */}
+            {/* Toggles */}
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground font-medium text-xs uppercase tracking-wider w-12 shrink-0">Txns</span>
+                <select
+                  value={txnsFilter}
+                  onChange={(e) => updateParams({ txns: e.target.value || null })}
+                  className="text-xs border rounded px-2 py-1 bg-background h-7"
+                >
+                  <option value="">Any</option>
+                  <option value="yes">With transactions</option>
+                  <option value="no">No transactions</option>
+                </select>
+              </div>
               <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
                 <Checkbox
-                  checked={txnsOnly}
-                  onCheckedChange={(checked) => updateParams({ txns: checked ? "1" : null, notxns: null })}
+                  checked={showPOIs}
+                  onCheckedChange={(checked) => updateParams({ poi: checked ? "1" : null })}
                 />
-                Has txns
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
-                <Checkbox
-                  checked={noTxns}
-                  onCheckedChange={(checked) => updateParams({ notxns: checked ? "1" : null, txns: null })}
-                />
-                No txns
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
-                <Checkbox
-                  checked={contactOnly}
-                  onCheckedChange={(checked) => updateParams({ contact: checked ? "1" : null })}
-                />
-                Has contact
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
-                <Checkbox
-                  checked={phoneOnly}
-                  onCheckedChange={(checked) => updateParams({ phone: checked ? "1" : null })}
-                />
-                Has phone
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
-                <Checkbox
-                  checked={showFootprints}
-                  onCheckedChange={(checked) => updateParams({ fp: checked ? "1" : null })}
-                />
-                Building footprints
-                {showFootprints && currentZoom < FOOTPRINT_ZOOM_THRESHOLD && (
-                  <span className="text-[10px] text-muted-foreground">(zoom in)</span>
-                )}
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-foreground cursor-pointer select-none">
-                <Checkbox
-                  checked={showParcels}
-                  onCheckedChange={(checked) => updateParams({ pcl: checked ? "1" : null })}
-                />
-                Parcel boundaries
-                {showParcels && currentZoom < FOOTPRINT_ZOOM_THRESHOLD && (
+                Brand POIs
+                {showPOIs && currentZoom < POI_ZOOM_THRESHOLD && (
                   <span className="text-[10px] text-muted-foreground">(zoom in)</span>
                 )}
               </label>
@@ -774,7 +523,7 @@ export default function MapPage() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => updateParams({ yf: null, yt: null, pmin: null, pmax: null, popmin: null, popmax: null, bsmin: null, bsmax: null, acmin: null, acmax: null, txns: null, notxns: null, contact: null, phone: null, cat: null, brands: null })}
+                  onClick={() => updateParams({ city: null, brand: null, txns: null, pmin: null, pmax: null })}
                   className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground h-auto px-1 py-0.5"
                 >
                   <X size={12} />
@@ -801,122 +550,137 @@ export default function MapPage() {
           const { latitude, longitude, zoom, bearing, pitch } = e.viewState;
           sessionStorage.setItem(MAP_VIEW_KEY, JSON.stringify({ latitude, longitude, zoom, bearing, pitch }));
           setCurrentZoom(zoom);
-          // Debounced footprint + parcel fetch
-          if (footprintFetchTimer.current) clearTimeout(footprintFetchTimer.current);
-          footprintFetchTimer.current = setTimeout(() => {
-            if (mapRef.current) fetchFootprints(mapRef.current);
-          }, 300);
-          if (parcelFetchTimer.current) clearTimeout(parcelFetchTimer.current);
-          parcelFetchTimer.current = setTimeout(() => {
+          // Debounced parcel fetch on pan/zoom
+          if (fetchTimer.current) clearTimeout(fetchTimer.current);
+          fetchTimer.current = setTimeout(() => {
             if (mapRef.current) fetchParcels(mapRef.current);
           }, 300);
         }}
-        interactiveLayerIds={["clusters", "unclustered-point", "parcel-fill"]}
+        onLoad={() => {
+          if (mapRef.current) fetchParcels(mapRef.current);
+        }}
+        interactiveLayerIds={["clusters", "unclustered-centroid", "registry-parcel-fill", "registry-point"]}
         cursor="pointer"
       >
-        <Source
-          id="properties"
-          type="geojson"
-          data={geojson}
-          cluster={true}
-          clusterMaxZoom={11}
-          clusterRadius={35}
-        >
-          <Layer {...clusterLayer} />
-          <Layer {...clusterCountLayer} />
-          <Layer {...unclusteredPointLayer} />
-          <Layer {...parcelGroupRingLayer} />
-        </Source>
-
-        {showFootprints && (
-          <Source id="footprints" type="geojson" data={footprintData}>
-            <Layer {...footprintFillLayer} />
-            <Layer {...footprintLineLayer} />
+        {/* Polygon source — visible at high zoom */}
+        {showPolygons && (
+          <Source id="registry-parcels" type="geojson" data={parcelData}>
+            <Layer {...registryParcelFillLayer} />
+            <Layer {...registryParcelLineLayer} />
+            <Layer {...registryPointLayer} />
           </Source>
         )}
 
-        {showParcels && (
-          <Source id="parcels" type="geojson" data={parcelData}>
-            <Layer {...parcelFillLayer} />
-            <Layer {...parcelLineLayer} />
+        {/* Centroid cluster source — visible at low zoom */}
+        {!showPolygons && (
+          <Source
+            id="registry-centroids"
+            type="geojson"
+            data={centroidGeojson}
+            cluster={true}
+            clusterMaxZoom={12}
+            clusterRadius={35}
+          >
+            <Layer {...clusterLayer} />
+            <Layer {...clusterCountLayer} />
+            <Layer {...unclusteredCentroidLayer} />
           </Source>
         )}
 
-        {selected && (
+        {/* POI layers from Mapbox vector tiles */}
+        {showPOIs && (
+          <>
+            <Layer {...poiCircleLayer} />
+            <Layer {...poiLabelLayer} />
+          </>
+        )}
+
+        {/* Popup */}
+        {popupData && (
           <Popup
-            latitude={selected.lat!}
-            longitude={selected.lng!}
-            onClose={() => setSelected(null)}
+            latitude={popupData.lat}
+            longitude={popupData.lng}
+            onClose={() => setPopupData(null)}
             closeButton={false}
             closeOnClick={false}
             maxWidth="300px"
             offset={12}
           >
-            <PropertyPopup
-              property={selected}
-              onClose={() => setSelected(null)}
-            />
-          </Popup>
-        )}
-
-        {parcelPopup && (
-          <Popup
-            latitude={parcelPopup.lat}
-            longitude={parcelPopup.lng}
-            onClose={() => setParcelPopup(null)}
-            closeButton={false}
-            closeOnClick={false}
-            maxWidth="260px"
-            offset={8}
-          >
-            <div className="min-w-[200px]">
-              <div className="flex items-start justify-between gap-2 mb-2">
-                <div>
-                  <p className="text-xs font-semibold text-foreground">
-                    {parcelPopup.parcel_id ?? "Parcel"}
-                  </p>
-                  {parcelPopup.municipality && (
-                    <p className="text-[10px] text-muted-foreground capitalize">{parcelPopup.municipality}</p>
-                  )}
-                </div>
+            <div className="min-w-[220px] max-w-[280px]">
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <h3 className="text-sm font-semibold text-foreground leading-tight">
+                  {popupData.address || "Unnamed Parcel"}
+                </h3>
                 <button
-                  onClick={() => setParcelPopup(null)}
+                  onClick={() => setPopupData(null)}
                   className="text-muted-foreground hover:text-foreground text-lg leading-none -mt-0.5"
                 >
                   &times;
                 </button>
               </div>
-              {parcelPopup.area_sqm && (
-                <p className="text-[10px] text-muted-foreground mb-2">
-                  {(parcelPopup.area_sqm / 4047).toFixed(2)} ac &middot; {parcelPopup.area_sqm.toLocaleString()} m²
-                </p>
-              )}
-              {parcelPopup.properties.length > 0 && (
-                <div className="mb-2">
-                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
-                    Properties ({parcelPopup.properties.length})
-                  </p>
-                  <div className="flex flex-wrap gap-1">
-                    {parcelPopup.properties.map((pid) => (
-                      <Link
-                        key={pid}
-                        to={`/properties/${pid}`}
-                        className="text-[10px] text-muted-foreground hover:text-foreground underline"
-                        onClick={() => setParcelPopup(null)}
-                      >
-                        {pid}
-                      </Link>
+              <p className="text-xs text-muted-foreground mb-2">
+                {popupData.city}
+                {popupData.pid && <span className="ml-2 font-mono">{popupData.pid}</span>}
+              </p>
+
+              <div className="space-y-1 text-xs text-foreground">
+                {popupData.transaction_count > 0 && (
+                  <div className="flex justify-between">
+                    <span>Transactions</span>
+                    <span className="font-medium">{popupData.transaction_count}</span>
+                  </div>
+                )}
+                {popupData.latest_price != null && (
+                  <div className="flex justify-between">
+                    <span>Latest price</span>
+                    <span className="font-medium">{formatPrice(popupData.latest_price)}</span>
+                  </div>
+                )}
+                {popupData.latest_date && (
+                  <div className="flex justify-between">
+                    <span>Latest sale</span>
+                    <span className="font-medium">{popupData.latest_date}</span>
+                  </div>
+                )}
+                {popupData.zoning && (
+                  <div className="flex justify-between">
+                    <span>Zoning</span>
+                    <span className="font-mono">{popupData.zoning}</span>
+                  </div>
+                )}
+                {popupData.brands.length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {popupData.brands.map((b) => (
+                      <Badge key={b} variant="secondary" className="text-[10px] px-1.5 py-0">
+                        {b}
+                      </Badge>
                     ))}
                   </div>
-                </div>
-              )}
-              {parcelPopup.brands.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {parcelPopup.brands.map((b) => (
-                    <BrandBadge key={b} brand={b} />
-                  ))}
-                </div>
-              )}
+                )}
+                {popupData.sources.length > 0 && (
+                  <div className="flex gap-1 pt-1">
+                    {popupData.sources.map((s) => (
+                      <Badge key={s} variant="outline" className="text-[10px] px-1.5 py-0">
+                        {s}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2 mt-3">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="flex-1 text-xs"
+                  onClick={() => {
+                    setPopupData(null);
+                    navigate(`/parcels/${popupData.arn}`);
+                  }}
+                >
+                  View parcel
+                </Button>
+              </div>
             </div>
           </Popup>
         )}
@@ -924,27 +688,26 @@ export default function MapPage() {
 
       {/* Legend */}
       <div className="absolute bottom-4 right-4 z-10 bg-background/95 backdrop-blur rounded-lg shadow-lg px-3 py-2">
-        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Pipeline</p>
+        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Parcels</p>
         <div className="space-y-1">
           {([
-            ["#bcbbb5", "Not Started"],
-            ["#5eb1ef", "Attempted Contact"],
-            ["#3db9cf", "Interested"],
-            ["#53b9ab", "Listed / Active Deal"],
-            ["#56ba9f", "In Negotiation"],
-            ["#65ba74", "Under Contract"],
-            ["#8db654", "Closed / Won"],
-            ["#9b9ef0", "Lost / Cancelled"],
-            ["#ec8e7b", "Do Not Contact"],
+            ["#0d9488", "With transactions"],
+            ["#f59e0b", "Branded only"],
           ] as const).map(([color, label]) => (
             <div key={label} className="flex items-center gap-1.5">
               <span
-                className="inline-block w-3 h-3 rounded-full border border-white shadow-sm flex-none"
+                className="inline-block w-3 h-3 rounded-sm border border-white shadow-sm flex-none"
                 style={{ backgroundColor: color }}
               />
               <span className="text-[10px] text-foreground leading-none">{label}</span>
             </div>
           ))}
+          {showPOIs && (
+            <div className="flex items-center gap-1.5 mt-1.5 pt-1.5 border-t border-border">
+              <span className="inline-block w-3 h-3 rounded-full border border-white shadow-sm flex-none" style={{ backgroundColor: "#7c3aed" }} />
+              <span className="text-[10px] text-foreground leading-none">Brand POI</span>
+            </div>
+          )}
         </div>
       </div>
     </div>

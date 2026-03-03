@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Parse Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  /* Parse-specific: 3-column with override grids */
+  .review-body { display: grid; grid-template-columns: 200px 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Parse Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search RT ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse" class="active">Parse</a>
+  <a href="/review/normalize">Normalize</a>
+  <a href="/review/expand">Expand</a>
+  <a href="/review/extract">Extract (legacy)</a>
+  <a href="/review/geocode" class="disabled">Geocode</a>
+  <a href="/review/parcels" class="disabled">Parcels</a>
+  <a href="/review/properties" class="disabled">Properties</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">REGRESSION — Sandbox differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="reg-reject">Reject Sandbox</button>
+</div>
+
+<div class="columns">
+  <div class="column" id="col-left">
+    <div class="col-header">
+      <span>HTML Source</span>
+      <span id="flag-chips"></span>
+    </div>
+    <div class="empty-state" id="html-empty">Select an RT ID</div>
+    <iframe id="html-frame" style="display:none;"></iframe>
+  </div>
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active (Verified)</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select an RT ID</div>
+    <div class="parsed-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select an RT ID</div>
+    <div class="parsed-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about this record..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div class="review-col">
+      <div class="review-pane-title">Transaction / Property</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Address</label><input id="ovr-address"></div>
+        <div class="override-item"><label>Suite</label><input id="ovr-address_suite"></div>
+        <div class="override-item"><label>City</label><input id="ovr-city"></div>
+        <div class="override-item"><label>Municipality</label><input id="ovr-municipality"></div>
+        <div class="override-item"><label>Postal Code</label><input id="ovr-postal_code"></div>
+        <div class="override-item"><label>Sale Price</label><input id="ovr-sale_price"></div>
+        <div class="override-item"><label>Sale Date</label><input id="ovr-sale_date"></div>
+        <div class="override-item"><label>ARN</label><input id="ovr-arn"></div>
+        <div class="override-item"><label>Description</label><input id="ovr-description"></div>
+        <div class="override-item"><label>Legal Description</label><input id="ovr-legal_description"></div>
+        <div class="override-item"><label>Site Area</label><input id="ovr-site_area"></div>
+        <div class="override-item"><label>Zoning</label><input id="ovr-zoning"></div>
+      </div>
+    </div>
+    <div class="review-col">
+      <div class="review-pane-title">Seller (Transferor)</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Name</label><input id="ovr-seller_name"></div>
+        <div class="override-item"><label>Contact</label><input id="ovr-seller_contact"></div>
+        <div class="override-item"><label>Phone</label><input id="ovr-seller_phone"></div>
+        <div class="override-item"><label>Address</label><input id="ovr-seller_address"></div>
+        <div class="override-item" style="grid-column:1/-1"><label>Alt Names (comma-sep)</label><input id="ovr-seller_alt_names"></div>
+      </div>
+      <div class="review-pane-title" style="margin-top:8px;">Buyer (Transferee)</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Name</label><input id="ovr-buyer_name"></div>
+        <div class="override-item"><label>Contact</label><input id="ovr-buyer_contact"></div>
+        <div class="override-item"><label>Phone</label><input id="ovr-buyer_phone"></div>
+        <div class="override-item"><label>Address</label><input id="ovr-buyer_address"></div>
+        <div class="override-item" style="grid-column:1/-1"><label>Alt Names (comma-sep)</label><input id="ovr-buyer_alt_names"></div>
+      </div>
+      <div class="review-pane-title" style="margin-top:8px;">Broker / Consideration</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Brokerage</label><input id="ovr-brokerage"></div>
+        <div class="override-item"><label>Broker Phone</label><input id="ovr-broker_phone"></div>
+        <div class="override-item"><label>Cash</label><input id="ovr-consideration_cash"></div>
+        <div class="override-item"><label>Assumed Debt</label><input id="ovr-consideration_debt"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── Parse-specific override fields ──
+const OVERRIDE_FIELDS = [
+  'address', 'address_suite', 'city', 'municipality', 'postal_code',
+  'sale_price', 'sale_date', 'arn', 'description', 'legal_description',
+  'site_area', 'zoning',
+  'seller_name', 'seller_contact', 'seller_phone', 'seller_address', 'seller_alt_names',
+  'buyer_name', 'buyer_contact', 'buyer_phone', 'buyer_address', 'buyer_alt_names',
+  'brokerage', 'broker_phone', 'consideration_cash', 'consideration_debt',
+];
+
+// Wire up override field dirty tracking
+for (const f of OVERRIDE_FIELDS) {
+  const el = document.getElementById('ovr-' + f);
+  if (el) el.addEventListener('input', () => review.markDirty());
+}
+
+// ── State ──
+let activeData = null;
+let sandboxData = null;
+let hasParseSandbox = false;
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'parse',
+  recordsUrl: '/api/rt-ids',
+  statusUrl: '/api/status',
+  regressionsUrl: '/api/regressions',
+  reviewUrl: '/api/review',
+  rejectDetermination: 'parser_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'bad_source', label: 'Bad Source' },
+    { value: 'parser_issue', label: 'Parser Issue' },
+  ],
+
+  getStatusText(status) {
+    hasParseSandbox = status.has_sandbox;
+    document.getElementById('active-version').textContent = status.active_version || '';
+    document.getElementById('sandbox-version').textContent = hasParseSandbox ? 'sandbox' : '';
+    return `Parse: ${status.active_version || 'none'} | Sandbox: ${hasParseSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    // Fetch flags
+    const [flagsRes] = await Promise.all([
+      fetch('/api/flags').then(r => r.json()),
+    ]);
+
+    // Tag records
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+    }
+
+    return { flags: flagsRes };
+  },
+
+  buildFilters(extra) {
+    const records = review.getAllRecords();
+    const filters = [
+      { value: 'all', label: 'All records', fn: () => true },
+      { value: 'flagged', label: 'All flagged', fn: r => r.flagged, count: records.filter(r => r.flagged).length },
+      { value: 'reviewed', label: 'Reviewed', fn: r => r.reviewed, count: records.filter(r => r.reviewed).length },
+      { value: 'unreviewed', label: 'Unreviewed', fn: r => !r.reviewed, count: records.filter(r => !r.reviewed).length },
+      { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+    ];
+
+    // Add specific flag filters
+    if (extra?.flags) {
+      const allDefs = { ...(extra.flags.html_flag_defs || {}), ...(extra.flags.parse_flag_defs || {}) };
+      const allCounts = {};
+      for (const [id, cnt] of Object.entries(extra.flags.html_counts || {})) allCounts[id] = (allCounts[id] || 0) + cnt;
+      for (const [id, cnt] of Object.entries(extra.flags.parse_counts || {})) allCounts[id] = (allCounts[id] || 0) + cnt;
+      for (const flagId of Object.keys(allDefs).sort()) {
+        const count = allCounts[flagId] || 0;
+        if (count > 0) {
+          filters.push({
+            value: flagId,
+            label: flagId,
+            count,
+            fn: r => (r.html_flags || []).includes(flagId) || (r.parse_flags || []).includes(flagId),
+          });
+        }
+      }
+    }
+
+    return filters;
+  },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // HTML iframe
+    const frame = document.getElementById('html-frame');
+    const htmlEmpty = document.getElementById('html-empty');
+    frame.src = `/api/html/${rtId}`;
+    frame.style.display = 'block';
+    htmlEmpty.style.display = 'none';
+
+    // Flag chips
+    const rec = review.getAllRecords().find(r => r.rt_id === rtId);
+    const chipEl = document.getElementById('flag-chips');
+    chipEl.innerHTML = '';
+    if (rec) {
+      if (!rec.flagged) {
+        chipEl.innerHTML = '<span class="flag-chip clean">CLEAN</span>';
+      } else {
+        for (const f of (rec.html_flags || [])) chipEl.innerHTML += `<span class="flag-chip html">${f}</span>`;
+        for (const f of (rec.parse_flags || [])) chipEl.innerHTML += `<span class="flag-chip parse">${f}</span>`;
+      }
+    }
+
+    // Fetch active + sandbox
+    activeData = null;
+    sandboxData = null;
+    try { const r = await fetch(`/api/active/${rtId}`); if (r.ok) activeData = await r.json(); } catch {}
+    try { const r = await fetch(`/api/sandbox/${rtId}`); if (r.ok) sandboxData = await r.json(); } catch {}
+
+    // Pane 2: Active
+    const middleEmpty = document.getElementById('middle-empty');
+    if (activeData) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      panes.middle.innerHTML = renderParsedFields(activeData);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'Not in active version';
+    }
+
+    // Pane 3: Sandbox (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (sandboxData) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      panes.right.innerHTML = renderParsedFields(sandboxData, activeData);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasParseSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+  },
+
+  getOverrides() {
+    const ovr = {};
+    for (const f of OVERRIDE_FIELDS) {
+      const val = document.getElementById('ovr-' + f)?.value;
+      if (val?.trim()) ovr[f] = val.trim();
+    }
+    return ovr;
+  },
+
+  setOverrides(ovr) {
+    for (const f of OVERRIDE_FIELDS) {
+      const el = document.getElementById('ovr-' + f);
+      if (el) el.value = (ovr && ovr[f]) || '';
+    }
+  },
+
+  clearOverrides() {
+    for (const f of OVERRIDE_FIELDS) {
+      const el = document.getElementById('ovr-' + f);
+      if (el) el.value = '';
+    }
+  },
+});
+</script>
+</body>
+</html>

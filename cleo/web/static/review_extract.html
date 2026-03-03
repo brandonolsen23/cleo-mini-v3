@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Extract Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  .review-body { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
+  .ext-ovr-item { margin-bottom: 8px; }
+  .ext-ovr-item label { font-size: 11px; color: #888; display: block; margin-bottom: 2px; }
+  .ext-ovr-item input {
+    width: 100%; padding: 5px 8px; border-radius: 4px; border: 1px solid #555;
+    background: #16213e; color: #fff; font-size: 12px; font-family: inherit;
+  }
+  .ext-ovr-item input:focus { outline: none; border-color: #e94560; }
+  .ext-ovr-item input::placeholder { color: #556; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Extract Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search RT ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse">Parse</a>
+  <a href="/review/normalize">Normalize</a>
+  <a href="/review/expand">Expand</a>
+  <a href="/review/extract" class="active">Extract (legacy)</a>
+  <a href="/review/geocode" class="disabled">Geocode</a>
+  <a href="/review/parcels" class="disabled">Parcels</a>
+  <a href="/review/properties" class="disabled">Properties</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">EXTRACT REGRESSION — Sandbox differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Extraction</button>
+  <button class="reject-btn" id="reg-reject">Reject Extraction</button>
+</div>
+
+<div class="columns">
+  <div class="column" id="col-left">
+    <div class="col-header"><span>Parsed (Source)</span></div>
+    <div class="empty-state" id="left-empty">Select an RT ID</div>
+    <div class="parsed-data" id="pane-left" style="display:none;"></div>
+  </div>
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active Extracted</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select an RT ID</div>
+    <div class="extracted-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox Extracted</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select an RT ID</div>
+    <div class="extracted-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about extraction quality..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div>
+      <div class="review-pane-title">Address Overrides</div>
+      <div id="ext-ovr-container"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── State ──
+let activeData = null;
+let extractedActive = null;
+let extractedSandbox = null;
+let hasExtractSandbox = false;
+let extOverrideKeys = [];
+
+// ── Extracted data rendering ──
+function renderExtractedPane(container, data, compareData) {
+  const prevByOrig = {};
+  if (compareData) {
+    for (const a of (compareData.property?.addresses || [])) {
+      prevByOrig[a.original] = (a.expanded || []).join('|');
+    }
+  }
+
+  let html = '';
+
+  // Property addresses
+  const addrs = data.property?.addresses || [];
+  html += '<div class="section"><div class="section-title">Property Addresses</div>';
+  if (!addrs.length) html += '<div style="color:#ccc;font-style:italic;padding:4px 0;">(none)</div>';
+  for (const a of addrs) {
+    const newExp = (a.expanded || []).join('|');
+    const oldExp = prevByOrig[a.original];
+    const changed = compareData && oldExp !== undefined && oldExp !== newExp;
+    const isNew = compareData && oldExp === undefined;
+    html += `<div class="addr-group${changed ? ' addr-changed' : ''}">`;
+    html += `<div class="addr-original">${escHtml(a.original)}`;
+    if (a.skip_geocode) html += ' <span class="addr-diff-badge addr-skip-badge">SKIP GEO</span>';
+    if (changed) html += ' <span class="addr-diff-badge">CHANGED</span>';
+    if (isNew) html += ' <span class="addr-diff-badge addr-new-badge">NEW</span>';
+    html += '</div>';
+    for (const exp of (a.expanded || [])) html += `<div class="addr-expanded">${escHtml(exp)}</div>`;
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Seller
+  const seller = data.seller || {};
+  const cmpSeller = compareData?.seller || {};
+  const sellerSkip = seller.skip_geocode ? ' <span class="party-skip-badge">SKIP GEO</span>' : '';
+  html += `<div class="section"><div class="section-title">Seller${sellerSkip}</div>`;
+  html += extPartyRow('Original', seller.original, cmpSeller.original);
+  html += extPartyRow('Normalized', seller.normalized, cmpSeller.normalized);
+  html += '</div>';
+
+  // Buyer
+  const buyer = data.buyer || {};
+  const cmpBuyer = compareData?.buyer || {};
+  const buyerSkip = buyer.skip_geocode ? ' <span class="party-skip-badge">SKIP GEO</span>' : '';
+  html += `<div class="section"><div class="section-title">Buyer${buyerSkip}</div>`;
+  html += extPartyRow('Original', buyer.original, cmpBuyer.original);
+  html += extPartyRow('Normalized', buyer.normalized, cmpBuyer.normalized);
+  html += '</div>';
+
+  if (data.source_version) {
+    html += `<div class="section"><div class="section-title">Source</div>`;
+    html += `<div class="party-row"><span class="party-label">Parse Ver</span><span class="party-value">${escHtml(data.source_version)}</span></div>`;
+    html += '</div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function extPartyRow(label, value, cmpValue) {
+  const v = value || '';
+  const display = v || '(empty)';
+  const isEmpty = !v;
+  const changed = cmpValue !== undefined && String(v) !== String(cmpValue || '');
+  const cls = isEmpty ? 'party-value empty' : changed ? 'party-value changed' : 'party-value';
+  return `<div class="party-row"><span class="party-label">${escHtml(label)}</span><span class="${cls}">${escHtml(display)}</span></div>`;
+}
+
+// ── Dynamic override fields ──
+function buildExtOverrideFields() {
+  const container = document.getElementById('ext-ovr-container');
+  container.innerHTML = '';
+  extOverrideKeys = [];
+
+  const data = extractedActive;
+  if (!data) {
+    container.innerHTML = '<div style="color:#666;font-size:12px;">Load a record to see override fields</div>';
+    return;
+  }
+
+  const addrs = data.property?.addresses || [];
+  for (let i = 0; i < addrs.length; i++) {
+    const a = addrs[i];
+    const key = 'property_' + i;
+    const expanded = (a.expanded || []).join('; ');
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label title="${escHtml(expanded)}">${escHtml(a.original || 'Property address ' + i)}</label>` +
+      `<input id="ext-ovr-${key}" placeholder="${escHtml(expanded)}" data-key="${key}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', () => review.markDirty());
+  }
+
+  const seller = data.seller || {};
+  if (seller.original || seller.normalized) {
+    const key = 'seller';
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label>Seller address</label><input id="ext-ovr-${key}" placeholder="${escHtml(seller.normalized || seller.original || '')}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', () => review.markDirty());
+  }
+
+  const buyer = data.buyer || {};
+  if (buyer.original || buyer.normalized) {
+    const key = 'buyer';
+    const item = document.createElement('div');
+    item.className = 'ext-ovr-item';
+    item.innerHTML = `<label>Buyer address</label><input id="ext-ovr-${key}" placeholder="${escHtml(buyer.normalized || buyer.original || '')}">`;
+    container.appendChild(item);
+    extOverrideKeys.push(key);
+    item.querySelector('input').addEventListener('input', () => review.markDirty());
+  }
+}
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'extract',
+  recordsUrl: '/api/rt-ids',
+  statusUrl: '/api/status',
+  regressionsUrl: '/api/extract-regressions',
+  reviewUrl: '/api/extract-review',
+  rejectDetermination: 'extraction_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'extraction_issue', label: 'Extraction Issue' },
+    { value: 'parser_issue', label: 'Parser Issue (upstream)' },
+  ],
+
+  getStatusText(status) {
+    hasExtractSandbox = status.extract_has_sandbox;
+    document.getElementById('active-version').textContent = status.extract_active_version || '';
+    document.getElementById('sandbox-version').textContent = hasExtractSandbox ? 'sandbox' : '';
+    return `Extract: ${status.extract_active_version || 'none'} | Sandbox: ${hasExtractSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    // Fetch address issues
+    let addrIssues = {};
+    try { addrIssues = await fetch('/api/extract-address-issues').then(r => r.json()); } catch {}
+
+    // Fetch extract changes
+    let extractChanges = [];
+    try { extractChanges = await fetch('/api/extract-changes').then(r => r.json()); } catch {}
+
+    const changeSet = new Set(extractChanges);
+    const addrSets = {};
+    for (const [cat, ids] of Object.entries(addrIssues)) addrSets[cat] = new Set(ids);
+
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+      r.extract_changed = changeSet.has(r.rt_id);
+      r.addr_no_street_number = (addrSets.no_street_number || new Set()).has(r.rt_id);
+      r.addr_garbage = (addrSets.garbage_address || new Set()).has(r.rt_id);
+      r.addr_legal_desc = (addrSets.legal_description || new Set()).has(r.rt_id);
+      r.addr_suite_leading = (addrSets.suite_leading || new Set()).has(r.rt_id);
+      r.addr_intersection = (addrSets.intersection || new Set()).has(r.rt_id);
+      r.addr_half = (addrSets.half_address || new Set()).has(r.rt_id);
+      r.addr_building_name = (addrSets.building_name || new Set()).has(r.rt_id);
+      r.addr_minor = (addrSets.minor_issues || new Set()).has(r.rt_id);
+    }
+
+    return { addrIssues, extractChanges: changeSet };
+  },
+
+  buildFilters(extra) {
+    const records = review.getAllRecords();
+    return [
+      { value: 'all', label: 'All records', fn: () => true },
+      { value: 'extract_changes', label: 'Extract changes', fn: r => r.extract_changed, count: records.filter(r => r.extract_changed).length },
+      { value: 'regressions', label: 'Extract regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+      { value: 'addr_no_street_number', label: 'No street number', fn: r => r.addr_no_street_number, count: records.filter(r => r.addr_no_street_number).length },
+      { value: 'addr_garbage', label: 'Garbage address', fn: r => r.addr_garbage, count: records.filter(r => r.addr_garbage).length },
+      { value: 'addr_legal_desc', label: 'Legal description', fn: r => r.addr_legal_desc, count: records.filter(r => r.addr_legal_desc).length },
+      { value: 'addr_suite_leading', label: 'Suite leading', fn: r => r.addr_suite_leading, count: records.filter(r => r.addr_suite_leading).length },
+      { value: 'addr_intersection', label: 'Intersection', fn: r => r.addr_intersection, count: records.filter(r => r.addr_intersection).length },
+      { value: 'addr_half', label: 'Half address', fn: r => r.addr_half, count: records.filter(r => r.addr_half).length },
+      { value: 'addr_building_name', label: 'Building name', fn: r => r.addr_building_name, count: records.filter(r => r.addr_building_name).length },
+      { value: 'addr_minor', label: 'Minor issues', fn: r => r.addr_minor, count: records.filter(r => r.addr_minor).length },
+    ];
+  },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // Fetch active parsed (pane 1 source)
+    activeData = null;
+    try { const r = await fetch(`/api/active/${rtId}`); if (r.ok) activeData = await r.json(); } catch {}
+
+    // Fetch extracted active + sandbox
+    extractedActive = null;
+    extractedSandbox = null;
+    try { const r = await fetch(`/api/extracted/${rtId}`); if (r.ok) extractedActive = await r.json(); } catch {}
+    if (hasExtractSandbox) {
+      try { const r = await fetch(`/api/extract-sandbox/${rtId}`); if (r.ok) extractedSandbox = await r.json(); } catch {}
+    }
+
+    // Pane 1: Parsed source
+    const leftEmpty = document.getElementById('left-empty');
+    if (activeData) {
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      panes.left.innerHTML = renderParsedFields(activeData);
+    } else {
+      panes.left.style.display = 'none';
+      leftEmpty.style.display = 'flex';
+      leftEmpty.textContent = 'No active data';
+    }
+
+    // Pane 2: Active extracted
+    const middleEmpty = document.getElementById('middle-empty');
+    if (extractedActive) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      renderExtractedPane(panes.middle, extractedActive, null);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'No active extraction';
+    }
+
+    // Pane 3: Sandbox extracted (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (extractedSandbox) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      renderExtractedPane(panes.right, extractedSandbox, extractedActive);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasExtractSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+
+    // Rebuild override fields
+    buildExtOverrideFields();
+  },
+
+  getOverrides() {
+    const overrides = {};
+    for (const key of extOverrideKeys) {
+      const el = document.getElementById('ext-ovr-' + key);
+      if (el && el.value.trim()) overrides[key] = el.value.trim();
+    }
+    return overrides;
+  },
+
+  setOverrides(ovr) {
+    // Overrides are set after buildExtOverrideFields runs during loadRecord
+    // Re-apply after a short delay to allow DOM to update
+    setTimeout(() => {
+      for (const key of extOverrideKeys) {
+        const el = document.getElementById('ext-ovr-' + key);
+        if (el) el.value = (ovr && ovr[key]) || '';
+      }
+    }, 50);
+  },
+
+  clearOverrides() {
+    for (const key of extOverrideKeys) {
+      const el = document.getElementById('ext-ovr-' + key);
+      if (el) el.value = '';
+    }
+  },
+});
+</script>
+</body>
+</html>

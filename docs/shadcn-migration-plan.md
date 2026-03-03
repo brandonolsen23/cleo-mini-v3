@@ -1,5 +1,7 @@
 # shadcn/ui Migration Plan
 
+**Status:** In progress — base components (button, card, badge, input, textarea, checkbox, popover, sheet) built using Radix primitives in shadcn pattern. Custom Core2 typography scale applied. Not using shadcn CLI scaffolding.
+
 ## Target Configuration
 
 | Setting | Value |

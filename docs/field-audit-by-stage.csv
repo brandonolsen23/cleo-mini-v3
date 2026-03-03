@@ -1,0 +1,146 @@
+Category,Field,Parsed,Normalized,Expanded,Geocoded,Properties,Parties,Notes
+Identity,rt_id,✓,✓,✓ (as id),✓,✓ (in rt_ids[]),,
+Identity,source,,✓,✓,✓,✓,,Set to "realtrack" at normalize
+Identity,source_version,,✓,✓,✓,meta only,,Volatile — excluded from diffs
+Property Address,address (raw string),✓,✓ (as raw_address),,,,Used as dedup key in properties
+Property Address,street_number,,✓,✓,✓,,,Decomposed from raw address
+Property Address,street_name,,✓,✓,✓,,,Decomposed from raw address
+Property Address,street_suffix,,✓,✓,✓,,,Expanded: ST→STREET etc.
+Property Address,street_direction,,✓,✓,✓,,,Expanded: E→EAST etc.
+Property Address,unit,,✓,✓,✓,,,Extracted from address string
+Property Address,unit_type,,✓,✓,✓,,,SUITE/UNIT/FLOOR/APT etc.
+Property Address,po_box,,✓,,,,,Detected and extracted; not geocodable
+Property Address,rural_route,,✓,,,,,Detected and extracted; geocodable
+Property Address,building_name,,✓,,,,,Named buildings (e.g. GEORGIAN MALL)
+Property Address,city,✓,✓ (as normalized_city),✓,✓,✓,,Canonical city from AMO lookup
+Property Address,municipality,✓,✓,,,,✓,Region name (e.g. Metro Toronto)
+Property Address,province,✓,✓,✓,✓,✓,,Always Ontario for RT
+Property Address,postal_code,✓,✓,✓,✓,✓,,Regex extracted and formatted
+Property Address,address_suite,✓,,,,,,Rarely populated; merged into unit at normalize
+Property Address,alternate_addresses[],✓,→ property_alt,,,,,"Ranges like ""123-125"" expanded by parser"
+Property Address,category,,✓,,,,,street_address/no_street_number/po_box/legal_description/empty
+Property Address,address_scope,,✓,,,,,ontario/canadian/international/unknown
+Property Address,city_status,,✓,,,,,official/alias/unknown/empty — volatile
+Property Address,raw_city,,✓,,,,,Original city before normalization
+Property Address,canonical,,,✓,✓,,,"NEW at expand: full geocodable string e.g. ""123 MAIN STREET, LONDON, ONTARIO"""
+Property Address,skip_geocode,,,✓,✓,,,NEW at expand: bool flag for non-geocodable addresses
+Coordinates,lat,,,,✓,✓,,From CoordinateStore best_coords()
+Coordinates,lng,,,,✓,✓,,From CoordinateStore best_coords()
+Coordinates,geocoded_at,,,,✓,,,Timestamp of coordinate lookup
+Coordinates,provider_details,,,,✓,,,Provider name + accuracy + match_code
+Coordinates,provider_details.provider,,,,✓,,,mapbox/geocodio/here/scraper
+Coordinates,provider_details.accuracy,,,,✓,,,rooftop/place/approximate
+Coordinates,provider_details.match_code,,,,✓,,,exact/high/medium/low
+Seller Address,transferor.address (string),✓,✓ (as seller block),✓ (as seller.addresses[]),✓,,,Comma-separated string parsed at normalize
+Seller Address,seller.street_number,,✓,✓,✓,,,Decomposed from seller address string
+Seller Address,seller.street_name,,✓,✓,✓,,,
+Seller Address,seller.street_suffix,,✓,✓,✓,,,
+Seller Address,seller.street_direction,,✓,✓,✓,,,
+Seller Address,seller.unit,,✓,✓,✓,,,
+Seller Address,seller.city,,✓,✓,✓,,,
+Seller Address,seller.province,,✓,✓,✓,,,
+Seller Address,seller.postal_code,,✓,✓,✓,,,
+Seller Address,seller.canonical,,,✓,✓,,,
+Seller Address,seller.skip_geocode,,,✓,✓,,,
+Seller Address,seller.category,,✓,,,,,corporate_seller for RT
+Buyer Address,transferee.address (string),✓,✓ (as buyer block),✓ (as buyer.addresses[]),✓,,,Same decomposition as seller
+Buyer Address,buyer.street_number,,✓,✓,✓,,,
+Buyer Address,buyer.street_name,,✓,✓,✓,,,
+Buyer Address,buyer.street_suffix,,✓,✓,✓,,,
+Buyer Address,buyer.street_direction,,✓,✓,✓,,,
+Buyer Address,buyer.unit,,✓,✓,✓,,,
+Buyer Address,buyer.city,,✓,✓,✓,,,
+Buyer Address,buyer.province,,✓,✓,✓,,,
+Buyer Address,buyer.postal_code,,✓,✓,✓,,,
+Buyer Address,buyer.canonical,,,✓,✓,,,
+Buyer Address,buyer.skip_geocode,,,✓,✓,,,
+Buyer Address,buyer.category,,✓,,,,,corporate_buyer for RT
+Transaction Data,sale_date,✓,,,,,,Human readable: "07 May 2014"
+Transaction Data,sale_date_iso,✓,,,,backfill only,,ISO format: "2014-05-07" — NOT stored on property
+Transaction Data,sale_price,✓,,,,,,"Raw string: ""$2,090,000"" — NOT on property"
+Transaction Data,sale_price_raw,✓,,,,,,Verbatim copy of sale_price
+Transaction Data,arn,✓,,,,,,Assessment Roll Number — NOT on property (only via GW)
+Transaction Data,pins[],✓,,,,,,Property ID Numbers — NOT on property (only via GW)
+Transaction Data,rt_number,✓,,,,,,Duplicate of rt_id
+Site Facts,legal_description,✓,,,,,,Free text — NOT on property
+Site Facts,site_area,✓,,,,✓,,Numeric string — passed to property
+Site Facts,site_area_units,✓,,,,,,acres/sqft — NOT on property (units lost)
+Site Facts,site_frontage,✓,,,,,,Numeric string — NOT on property
+Site Facts,site_frontage_units,✓,,,,,,ft/m — NOT on property
+Site Facts,site_depth,✓,,,,,,Numeric string — NOT on property
+Site Facts,site_depth_units,✓,,,,,,ft/m — NOT on property
+Site Facts,zoning,✓,,,,,,Zoning code — NOT on property
+Consideration,cash,✓,,,,,,"Numeric string (no commas) — NOT on property"
+Consideration,assumed_debt,✓,,,,,,Numeric string — NOT on property
+Consideration,chattels,✓,,,,,,Numeric string — NOT on property
+Consideration,verbatim,✓,,,,,,Raw consideration text — NOT on property
+Consideration,chargees[],✓,,,,,,Lender names — NOT on property
+Seller Details,transferor.name,✓,,,,,✓,Company or person name
+Seller Details,transferor.contact,✓,,,,,✓,Primary contact person
+Seller Details,transferor.phone,✓,,,,,✓,Phone number
+Seller Details,transferor.company_lines[],✓,,,,,✓,Structured company name parts
+Seller Details,transferor.contact_lines[],✓,,,,,✓,Structured contact parts
+Seller Details,transferor.address_lines[],✓,,,,,,Structured address parts
+Seller Details,transferor.phones[],✓,,,,,✓,Multiple phone numbers
+Seller Details,transferor.officer_titles[],✓,,,,,✓,President/Director/etc.
+Seller Details,transferor.aliases[],✓,,,,,✓,Company name variants
+Seller Details,transferor.attention,✓,,,,,✓,Attention/contact name
+Seller Details,transferor.alternate_names[],✓,,,,,✓,Alt names from parser
+Buyer Details,transferee.name,✓,,,,,✓,Company or person name
+Buyer Details,transferee.contact,✓,,,,,✓,Primary contact person
+Buyer Details,transferee.phone,✓,,,,,✓,Phone number
+Buyer Details,transferee.company_lines[],✓,,,,,✓,Structured company name parts
+Buyer Details,transferee.contact_lines[],✓,,,,,✓,Structured contact parts
+Buyer Details,transferee.address_lines[],✓,,,,,,Structured address parts
+Buyer Details,transferee.phones[],✓,,,,,✓,Multiple phone numbers
+Buyer Details,transferee.officer_titles[],✓,,,,,✓,President/Director/etc.
+Buyer Details,transferee.aliases[],✓,,,,,✓,Company name variants
+Buyer Details,transferee.attention,✓,,,,,✓,Attention/contact name
+Buyer Details,transferee.alternate_names[],✓,,,,,✓,Alt names from parser
+Broker,brokerage,✓,,,,,,Brokerage name + agent — NOT on property
+Broker,broker.phone,✓,,,,,,Broker phone — NOT on property
+Extras,building_sf,✓,,,,✓,,Square footage string — passed to property
+Extras,description,✓,,,,,,Property description text — NOT on property
+Extras,photos[],✓,,,,,,CDN photo URLs — NOT on property
+Metadata,html_path,✓,,,,,,Volatile — excluded from diffs
+Metadata,ingest_timestamp,✓,,,,,,Volatile — excluded from diffs
+Metadata,skip_index,✓,,,,,,Export position — volatile
+Property Output,P-ID (P00001+),,,,,,✓,Assigned by property registry
+Property Output,rt_ids[],,,,,,✓,Aggregated from dedup
+Property Output,transaction_count,,,,,✓,,Count of rt_ids
+Property Output,sources[],,,,,✓,,"[""rt"", ""gw"", ""brand""]"
+Property Output,created,,,,,✓,,ISO date
+Property Output,updated,,,,,✓,,ISO date
+GW Fields,gw_id,✓ (GW parse),✓,✓,✓,via gw_data,,GeoWarehouse ID
+GW Fields,pin,✓ (GW parse),✓,,,via gw_data,,Property Identification Number
+GW Fields,owner_names,✓ (GW parse),,,,via gw_data,,Owner from summary
+GW Fields,owner_mailing_address,✓ (GW parse),✓ (as owner_address),✓,✓,,,MPAC owner address
+GW Fields,ownership_type,✓ (GW parse),,,,via gw_data,,Freehold/etc.
+GW Fields,land_registry_office,✓ (GW parse),,,,,,LRO designation
+GW Fields,property_type,✓ (GW parse),,,,via gw_data,,COMMERCIAL/RESIDENTIAL/etc.
+GW Fields,gw_address,✓ (GW parse),,,,,,Registry address
+GW Fields,gw_arn,✓ (GW parse),,,,via gw_data,,Assessment Roll Number from MPAC
+GW Fields,frontage,✓ (GW parse),,,,,,Lot frontage measurement
+GW Fields,zoning,✓ (GW parse),,,,via gw_data,,Zoning code from MPAC
+GW Fields,depth,✓ (GW parse),,,,,,Lot depth measurement
+GW Fields,property_description,✓ (GW parse),,,,via gw_data,,Description from MPAC
+GW Fields,property_code,✓ (GW parse),,,,,,MPAC property code
+GW Fields,current_assessed_value,✓ (GW parse),,,,via gw_data,,Assessment value
+GW Fields,valuation_date,✓ (GW parse),,,,,,Assessment date
+GW Fields,site_area,✓ (GW parse),,,,,,Area from MPAC
+GW Fields,sales_history[],✓ (GW parse),,,,,,Historical sales with dates/amounts/parties
+Brand Fields,brand,,✓,✓,✓,via brand_matches,,Brand name (e.g. Tim Hortons)
+Brand Fields,store_name,,✓,✓,✓,,,Individual store name
+Brand Fields,brand_id (BR_00001),,✓,✓,✓,,,Assigned at normalize
+Brand Fields,raw_coords (lat/lng),,✓,✓,,,,Brand scraper coordinates
+Brand Fields,phone,dropped,,,,,,Not address data — dropped at normalize
+Brand Fields,source_url,dropped,,,,,,Not address data — dropped at normalize
+Brand Fields,scraped_at,dropped,,,,,,Metadata — dropped at normalize
+Parcel Fields,pcl_id (PCL00001),,,,,future,,Assigned by ParcelStore
+Parcel Fields,parcel geometry (polygon),,,,,future,,GeoJSON from ArcGIS
+Parcel Fields,parcel ARN,,,,,future,,ASSESSMENT_ROLL_NUMBER from MPAC
+Parcel Fields,parcel centroid_lat,,,,,future,,Computed from polygon
+Parcel Fields,parcel centroid_lng,,,,,future,,Computed from polygon
+Parcel Fields,query_lat,,,,,,,Point used to query ArcGIS
+Parcel Fields,query_lng,,,,,,,Point used to query ArcGIS
+Parcel Fields,OGF_ID,,,,,future,,Ontario Geographic Feature ID

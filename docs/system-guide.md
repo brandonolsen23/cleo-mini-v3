@@ -51,40 +51,43 @@ data/parsed/active -> v00N    Symlink to current version
 data/reviews.json             Human determinations and field overrides
      |
      v
-[cleo extract --sandbox]      Address extraction: expand compound addresses
+[cleo normalize --sandbox]    Normalize addresses from all 3 sources
      |
      v
-data/extracted/v00N/          Versioned extraction snapshots
-data/extracted/active -> v00N
+data/normalized/active/       ~29,247 normalized records (RT + brands + GW)
      |
      v
-[cleo geocode]                Geocode addresses via Mapbox or HERE API
+[cleo expand --sandbox]       Split compound addresses into individual entries
      |
      v
-data/geocode_cache.json       Address -> {lat, lng} lookup cache
+data/expanded/active/         ~64,244 expanded address entries
      |
      v
-[cleo geocode --build-index]  Build address index from cache
+[cleo geocode]                Geocode addresses via Mapbox, Geocodio, or HERE
      |
      v
-data/address_index.json       Location index for map/search
+data/coordinates.json         Unified multi-provider coordinate store (~50K)
      |
      v
-[cleo properties]             Build canonical property registry
+[cleo parcelled --sandbox]    Resolve each record to a provincial parcel
+     |                          (ARN direct → PIN bridge → spatial → none)
+     v
+data/parcelled/active/        Parcel resolution per source record
+     |
+     v
+[cleo compile --sandbox]      Merge: parsed bypass + addresses + geocode + parcel
+     |
+     v
+data/compiled/active/         Unified compiled records per source ID
+     |
+     v
+[cleo properties]             Build canonical property registry (grouped by ARN)
      |
      v
 data/properties.json          Deduplicated property list (P-IDs)
      |
      v
-[cleo parties]                Build party group registry (union-find clustering)
-     |
-     v
-data/parties.json             Clustered party groups (G-IDs)
-     |
-     v
 [cleo web]                    Front-facing React SPA at /app/*
-                              Transactions | Properties | Parties |
-                              Contacts | Brands | Map
 
 GeoWarehouse (parallel pipeline):
      |
@@ -152,16 +155,34 @@ cleo-mini-v3/
         parse_description.py           Property description text
         parse_photos.py                Photo URLs
         parser_utils.py                Shared parser utilities
-    extract/
-      engine.py                Address extraction loop (parsed -> geocodable)
-      address_expander.py      Compound address expansion, PO Box/legal detection
-      versioning.py            Extraction versioning (uses VersionedStore)
+    normalize/
+      address.py               Single normalization path for all addresses
+      engine.py                Normalize adapter: reads RT + brands + GW
+      municipalities.py        Official municipality lookup (414 AMO)
+      versioning.py            VersionedStore at data/normalized/
+    expand/
+      engine.py                Compound address splitting
+      expander.py              Split logic, canonical building, skip rules
+      versioning.py            VersionedStore at data/expanded/
+    parcelled/
+      engine.py                Parcel resolution engine (ARN/PIN/coords → provincial GIS)
+      versioning.py            VersionedStore at data/parcelled/
+    compiled/
+      engine.py                Merge all pipeline outputs into unified records
+      versioning.py            VersionedStore at data/compiled/
+    extract/                   (Legacy — superseded by normalize/ + expand/)
+      engine.py                Legacy extraction loop
+      address_expander.py      Legacy compound expansion
+      versioning.py            Legacy versioning
     geocode/
-      cache.py                 GeocodeCache class (address -> lat/lng)
+      store.py                 CoordinateStore: unified multi-provider (~50K)
+      unified_collector.py     Collects from RT + GW + brands + parties
+      cache.py                 Legacy GeocodeCache (Mapbox-only, kept for compat)
       client.py                Mapbox batch geocoding client
-      here_client.py           HERE geocoding client (alternative)
+      geocodio_client.py       Geocodio batch client
+      here_client.py           HERE geocoding client
       runner.py                Geocoding orchestrator
-      collector.py             Address collection from extracted data
+      collector.py             Legacy address collection from extracted data
       index.py                 Address index builder
     properties/
       registry.py              Build/update property registry, geocode backfill
@@ -206,14 +227,22 @@ cleo-mini-v3/
     build_markets.py           Build markets.json (city population reference)
     party_signal_analysis.py   Party clustering analysis
   data/
-    html/                      Raw HTML files (~15,759 files)
+    html/{type}/*.html         Raw HTML files (~92,547 across 9 property types)
+    html_index.json            RT ID → subpath lookup
     parsed/                    Versioned JSON output
       sandbox/                 Current working parse (temporary)
-      v001/ through v011/      Immutable version snapshots
-      active -> v011           Symlink to current active version
-    extracted/                 Versioned address extractions
-      v001/ through v006/
-      active -> v006
+      v001/ through v014/      Immutable version snapshots
+      active -> v014           Symlink to current active version
+    normalized/                All 3 sources normalized together
+      v001/ through v019/      ~29,247 records
+      active -> v019
+    expanded/                  Compound-split addresses
+      v001/ through v004/      ~64,244 address entries
+      active -> v004
+    extracted/                 (Legacy — superseded by normalized/ + expanded/)
+      v001/ through v007/
+      active -> v007
+    coordinates.json           Unified multi-provider geocode store (~50K)
     gw_html/                   GeoWarehouse HTML files (~798 files)
     gw_parsed/                 GeoWarehouse parsed JSON
       v001/
@@ -279,9 +308,14 @@ Loaded automatically by `python-dotenv` on import of `cleo.config`. `REALTRACK_U
 | `DATA_DIR` | `{project_root}/data` | Root data directory |
 | `HTML_DIR` | `data/html` | Raw HTML storage |
 | `PARSED_DIR` | `data/parsed` | Versioned parse output |
-| `EXTRACTED_DIR` | `data/extracted` | Versioned extraction output |
+| `NORMALIZED_DIR` | `data/normalized` | Versioned normalize output |
+| `NORM_REVIEWS_PATH` | `data/norm_reviews.json` | Normalize review determinations |
+| `EXPANDED_DIR` | `data/expanded` | Versioned expand output |
+| `EXPAND_REVIEWS_PATH` | `data/expand_reviews.json` | Expand review determinations |
+| `EXTRACTED_DIR` | `data/extracted` | Legacy versioned extraction output |
+| `EXTRACT_REVIEWS_PATH` | `data/extract_reviews.json` | Legacy extraction reviews |
 | `TRACKER_PATH` | `data/seen_rt_ids.json` | Ingestion tracker |
-| `EXTRACT_REVIEWS_PATH` | `data/extract_reviews.json` | Extraction review determinations |
+| `HTML_INDEX_PATH` | `data/html_index.json` | RT ID → subpath lookup |
 | `PROPERTIES_PATH` | `data/properties.json` | Property registry |
 | `PARTIES_PATH` | `data/parties.json` | Party group registry |
 | `PARTY_EDITS_PATH` | `data/party_edits.jsonl` | Party edit audit log |
@@ -290,14 +324,20 @@ Loaded automatically by `python-dotenv` on import of `cleo.config`. `REALTRACK_U
 | `BRANDS_DATA_DIR` | `brands/data` | Brand store JSON files |
 | `MARKETS_PATH` | `data/markets.json` | City population reference |
 | `FEEDBACK_PATH` | `data/feedback.json` | User feedback |
-| `GEOCODE_CACHE_PATH` | `data/geocode_cache.json` | Geocode cache |
+| `COORDINATES_PATH` | `data/coordinates.json` | Unified multi-provider geocode store |
+| `GEOCODE_CACHE_PATH` | `data/geocode_cache.json` | Legacy Mapbox-only cache |
 | `ADDRESS_INDEX_PATH` | `data/address_index.json` | Address index |
+| `PARCELS_DIR` | `data/parcels` | Parcel boundary data |
+| `PARCELS_PATH` | `data/parcels/parcels.json` | Parcel cache |
+| `PARCELS_SERVICES_PATH` | `data/parcels/services.json` | Municipality ArcGIS endpoints |
 | `GW_SOURCE_DIR` | env `GW_SOURCE_DIR` | GeoWarehouse HTML source |
 | `GW_HTML_DIR` | `data/gw_html` | GeoWarehouse HTML storage |
 | `GW_PARSED_DIR` | `data/gw_parsed` | GeoWarehouse parsed output |
+| `CRM_DIR` | `data/crm` | CRM data directory |
+| `STREETVIEW_DIR` | `data/streetview` | Cached Street View images |
 | `REALTRACK_BASE` | `https://realtrack.com` | API base URL |
 
-Directories (`HTML_DIR`, `PARSED_DIR`, `EXTRACTED_DIR`) are auto-created on import.
+Directories are auto-created on import (HTML, parsed, normalized, expanded, extracted, CRM, outreach, operators, streetview, footprints, parcels, branded_parcels).
 
 ### Dependencies
 

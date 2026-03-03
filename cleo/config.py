@@ -16,6 +16,26 @@ TRACKER_PATH = DATA_DIR / "seen_rt_ids.json"
 HTML_INDEX_PATH = DATA_DIR / "html_index.json"
 EXTRACT_REVIEWS_PATH = DATA_DIR / "extract_reviews.json"
 
+# Normalization
+NORMALIZED_DIR = DATA_DIR / "normalized"
+NORM_REVIEWS_PATH = DATA_DIR / "norm_reviews.json"
+
+# Expansion
+EXPANDED_DIR = DATA_DIR / "expanded"
+EXPAND_REVIEWS_PATH = DATA_DIR / "expand_reviews.json"
+
+# Parcelled (versioned parcel resolution per source record)
+PARCELLED_DIR = DATA_DIR / "parcelled"
+PARCELLED_REVIEWS_PATH = DATA_DIR / "parcelled_reviews.json"
+
+# Compiled (all sources reassembled per record)
+COMPILED_DIR = DATA_DIR / "compiled"
+COMPILED_REVIEWS_PATH = DATA_DIR / "compiled_reviews.json"
+
+# Geocoded (versioned stage — expanded + coordinates assembled)
+GEOCODED_DIR = DATA_DIR / "geocoded"
+GEO_REVIEWS_PATH = DATA_DIR / "geo_reviews.json"
+
 # Properties
 PROPERTIES_PATH = DATA_DIR / "properties.json"
 PROPERTY_EDITS_PATH = DATA_DIR / "property_edits.jsonl"
@@ -29,6 +49,9 @@ PARTY_EDITS_PATH = DATA_DIR / "party_edits.jsonl"
 KEYWORDS_PATH = DATA_DIR / "brand_keywords.json"
 
 # Brands
+NORMALIZE_SKIP_BRANDS = {
+    "esso.json", "mobil.json", "pioneer.json", "ultramar.json",
+}
 BRAND_MATCHES_PATH = DATA_DIR / "brand_matches.json"
 BRANDS_DATA_DIR = _PROJECT_ROOT / "brands" / "data"
 MASTER_BRANDS_CSV = Path(os.getenv(
@@ -74,9 +97,16 @@ FOOTPRINTS_RAW_DIR = FOOTPRINTS_DIR / "raw"
 # Parcels
 PARCELS_DIR = DATA_DIR / "parcels"
 PARCELS_PATH = PARCELS_DIR / "parcels.json"
+PROVINCIAL_RAW_PATH = PARCELS_DIR / "provincial_raw.json"
 PARCELS_MATCHES_PATH = PARCELS_DIR / "matches.json"
 PARCELS_SERVICES_PATH = PARCELS_DIR / "services.json"
 PARCELS_CONSOLIDATION_PATH = PARCELS_DIR / "consolidation.json"
+BRANDED_PARCELS_DIR = DATA_DIR / "branded_parcels"
+PROPERTY_PARCEL_INDEX_PATH = PARCELS_DIR / "property_parcel_index.json"
+
+# Parcel-centric registry
+PARCEL_CACHE_PATH = PARCELS_DIR / "parcel_cache.json"
+PARCEL_REGISTRY_PATH = DATA_DIR / "parcel_registry.json"
 
 # Geocoding
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "").strip()
@@ -88,10 +118,17 @@ ADDRESS_INDEX_PATH = DATA_DIR / "address_index.json"
 
 # Google Places & Street View
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "").strip()
+
+# Ontario Assessment Parcel MapServer (AgMaps)
+AGMAPS_TOKEN = os.getenv("AGMAPS_TOKEN", "").strip()
+AGMAPS_PARCEL_URL = "https://ws.lioservices.lrc.gov.on.ca/arcgis4/rest/services/AIA/Assessment_Parcel_Map/MapServer/0"
 GOOGLE_PLACES_PATH = DATA_DIR / "google_places.json"
 GOOGLE_BUDGET_PATH = DATA_DIR / "google_budget.json"
 STREETVIEW_DIR = DATA_DIR / "streetview"
 STREETVIEW_META_PATH = DATA_DIR / "streetview_meta.json"
+
+# Monitor / metrics
+METRICS_DIR = DATA_DIR / "metrics"
 
 # Ensure directories exist
 HTML_DIR.mkdir(parents=True, exist_ok=True)
@@ -104,6 +141,13 @@ STREETVIEW_DIR.mkdir(parents=True, exist_ok=True)
 FOOTPRINTS_DIR.mkdir(parents=True, exist_ok=True)
 FOOTPRINTS_RAW_DIR.mkdir(parents=True, exist_ok=True)
 PARCELS_DIR.mkdir(parents=True, exist_ok=True)
+BRANDED_PARCELS_DIR.mkdir(parents=True, exist_ok=True)
+NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
+EXPANDED_DIR.mkdir(parents=True, exist_ok=True)
+GEOCODED_DIR.mkdir(parents=True, exist_ok=True)
+PARCELLED_DIR.mkdir(parents=True, exist_ok=True)
+COMPILED_DIR.mkdir(parents=True, exist_ok=True)
+METRICS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Realtrack base URL
 REALTRACK_BASE = "https://realtrack.com"

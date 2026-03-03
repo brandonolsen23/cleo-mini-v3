@@ -15,6 +15,7 @@ _TOTAL_PATTERN = re.compile(r"\.pagination\((\d+),")
 
 # Property type slug -> sf3 form value
 # Populated by running `cleo discover-types` against the live search form.
+# "all" uses empty sf3 to catch uncategorized transactions not in any specific type.
 PROPERTY_TYPES: Dict[str, str] = {
     "retail": "retailBldg",
     "industrial": "indBldg",
@@ -27,6 +28,7 @@ PROPERTY_TYPES: Dict[str, str] = {
     "res-land": "resLand",
     "farm": "farmLand",
     "other-land": "otherLand",
+    "all": "",
 }
 
 
@@ -88,8 +90,7 @@ def discover_property_types(session: RealtrackSession) -> List[Dict[str, str]]:
     for opt in select.find_all("option"):
         value = opt.get("value", "").strip()
         label = opt.get_text(strip=True)
-        if value:  # skip empty "All" option
-            options.append({"value": value, "label": label})
+        options.append({"value": value, "label": label})
 
     return options
 

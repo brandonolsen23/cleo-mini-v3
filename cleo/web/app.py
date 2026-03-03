@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH
+from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH, NORMALIZED_DIR, NORM_REVIEWS_PATH, EXPANDED_DIR, EXPAND_REVIEWS_PATH, PARCEL_REGISTRY_PATH
 from cleo.ingest.html_index import HtmlIndex
 from cleo.parse.versioning import active_dir, active_version, sandbox_path, sandbox_exists, list_versions, VOLATILE_FIELDS
 from cleo.extract import versioning as extract_ver
@@ -24,6 +24,18 @@ app = FastAPI(title="Cleo Review")
 app.include_router(crm_router)
 app.include_router(operators_router)
 app.include_router(outreach_router)
+
+
+@app.on_event("startup")
+def _warm_caches():
+    """Pre-compute sandbox-changed set in a background thread."""
+    import threading
+    def _warm():
+        try:
+            api_norm_sandbox_changed()
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
 
 STATIC_DIR = Path(__file__).parent / "static"
 REVIEWS_PATH = DATA_DIR / "reviews.json"
@@ -60,6 +72,450 @@ def party_review_page():
     from fastapi.responses import HTMLResponse as HR
     content = (STATIC_DIR / "party_review.html").read_text(encoding="utf-8")
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+# Stage review pages (new standardized review UI per pipeline stage)
+@app.get("/review", response_class=HTMLResponse)
+def review_landing():
+    content = (STATIC_DIR / "review_landing.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/shared.css")
+def review_shared_css():
+    return FileResponse(STATIC_DIR / "review_shared.css", media_type="text/css",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/shared.js")
+def review_shared_js():
+    return FileResponse(STATIC_DIR / "review_shared.js", media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/parse", response_class=HTMLResponse)
+def review_parse():
+    content = (STATIC_DIR / "review_parse.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/normalize", response_class=HTMLResponse)
+def review_normalize():
+    content = (STATIC_DIR / "review_normalize.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/extract", response_class=HTMLResponse)
+def review_extract():
+    content = (STATIC_DIR / "review_extract.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/expand", response_class=HTMLResponse)
+def review_expand():
+    content = (STATIC_DIR / "review_expand.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+# ---------------------------------------------------------------------------
+# API — Normalization endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/norm-status")
+def api_norm_status():
+    """Return normalization pipeline versioning status."""
+    norm_dir = NORMALIZED_DIR
+    active_link = norm_dir / "active"
+    has_active = active_link.exists()
+    active_ver = active_link.resolve().name if has_active else None
+    has_sandbox = (norm_dir / "sandbox").is_dir()
+    versions = sorted([d.name for d in norm_dir.iterdir()
+                       if d.is_dir() and d.name.startswith("v")]) if norm_dir.exists() else []
+    return {
+        "active_version": active_ver,
+        "versions": versions,
+        "has_sandbox": has_sandbox,
+    }
+
+
+@app.get("/api/norm-rt-ids")
+def api_norm_rt_ids():
+    """List all normalized record IDs (RT, brand, GW) with review status."""
+    norm_active = NORMALIZED_DIR / "active"
+    if not norm_active.exists():
+        raise HTTPException(404, "No active normalized version")
+
+    all_ids = sorted(
+        f.stem for f in norm_active.glob("*.json") if f.stem != "_meta"
+    )
+
+    norm_reviews = _load_json(NORM_REVIEWS_PATH)
+
+    records = []
+    for record_id in all_ids:
+        reviewed = record_id in norm_reviews
+        # Determine source from ID prefix
+        if record_id.startswith("BR_"):
+            source = "brand"
+        elif record_id.startswith("GW"):
+            source = "geowarehouse"
+        else:
+            source = "realtrack"
+        records.append({
+            "rt_id": record_id,
+            "source": source,
+            "reviewed": reviewed,
+            "determination": norm_reviews.get(record_id, {}).get("determination", ""),
+        })
+
+    return records
+
+
+@app.get("/api/norm-no-street-number")
+def api_norm_no_street_number():
+    """Return IDs of normalized records with empty property street_number.
+
+    Checks sandbox first (if exists), otherwise active.
+    """
+    norm_sandbox = NORMALIZED_DIR / "sandbox"
+    norm_active = NORMALIZED_DIR / "active"
+    check_dir = norm_sandbox if norm_sandbox.exists() else norm_active
+    if not check_dir.exists():
+        return []
+
+    result = []
+    for f in check_dir.glob("*.json"):
+        if f.stem == "_meta":
+            continue
+        try:
+            data = json.loads(f.read_text())
+            prop = data.get("property", {})
+            if not prop.get("street_number", "").strip():
+                result.append(f.stem)
+        except Exception:
+            continue
+    return sorted(result)
+
+
+@app.get("/api/normalized/{rt_id}")
+def api_normalized(rt_id: str):
+    """Return normalized JSON from active version."""
+    norm_active = NORMALIZED_DIR / "active" / f"{rt_id}.json"
+    if not norm_active.exists():
+        raise HTTPException(404, "Not in active normalized version")
+    return json.loads(norm_active.read_text(encoding="utf-8"))
+
+
+@app.get("/api/normalize-sandbox/{rt_id}")
+def api_normalize_sandbox(rt_id: str):
+    """Return normalized JSON from sandbox."""
+    norm_sandbox = NORMALIZED_DIR / "sandbox" / f"{rt_id}.json"
+    if not norm_sandbox.exists():
+        raise HTTPException(404, "Not in normalize sandbox")
+    return json.loads(norm_sandbox.read_text(encoding="utf-8"))
+
+
+@app.get("/api/norm-review/{rt_id}")
+def api_norm_review_get(rt_id: str):
+    """Get normalization review for an RT ID."""
+    reviews = _load_json(NORM_REVIEWS_PATH)
+    return reviews.get(rt_id, {})
+
+
+@app.post("/api/norm-review/{rt_id}")
+async def api_norm_review_post(rt_id: str, request: Request):
+    """Save normalization review for an RT ID."""
+    body = await request.json()
+    reviews = _load_json(NORM_REVIEWS_PATH)
+    reviews[rt_id] = {
+        "determination": body.get("determination", ""),
+        "notes": body.get("notes", ""),
+        "overrides": body.get("overrides", {}),
+        "sandbox_accepted": body.get("sandbox_accepted", False),
+        "date": datetime.now().isoformat()[:10],
+    }
+    _save_json(NORM_REVIEWS_PATH, reviews)
+    return {"ok": True}
+
+
+@app.get("/api/norm-regressions")
+def api_norm_regressions():
+    """Return RT IDs of reviewed normalized records that changed in sandbox."""
+    reviews = _load_json(NORM_REVIEWS_PATH)
+    norm_active = NORMALIZED_DIR / "active"
+    norm_sandbox = NORMALIZED_DIR / "sandbox"
+
+    if not norm_active.exists() or not norm_sandbox.exists():
+        return []
+
+    regressions = []
+    for rt_id, rev in reviews.items():
+        if rev.get("sandbox_accepted"):
+            continue
+        if rev.get("determination") != "clean":
+            continue
+        active_file = norm_active / f"{rt_id}.json"
+        sandbox_file = norm_sandbox / f"{rt_id}.json"
+        if not active_file.exists() or not sandbox_file.exists():
+            continue
+        active_data = json.loads(active_file.read_text(encoding="utf-8"))
+        sandbox_data = json.loads(sandbox_file.read_text(encoding="utf-8"))
+        # Strip volatile fields
+        for d in (active_data, sandbox_data):
+            d.pop("source_version", None)
+        if active_data != sandbox_data:
+            regressions.append(rt_id)
+
+    return regressions
+
+
+_norm_sandbox_changed_cache: dict = {"key": None, "data": []}
+
+@app.get("/api/norm-sandbox-changed")
+def api_norm_sandbox_changed():
+    """Return RT IDs where sandbox normalization differs from active (cached)."""
+    from cleo.normalize.versioning import NORM_VOLATILE_FIELDS, store as norm_store
+
+    norm_active = NORMALIZED_DIR / "active"
+    norm_sandbox = NORMALIZED_DIR / "sandbox"
+
+    if not norm_active.exists() or not norm_sandbox.exists():
+        return []
+
+    # Cache key: sandbox dir mtime (changes when files are written)
+    try:
+        cache_key = norm_sandbox.stat().st_mtime
+    except OSError:
+        cache_key = None
+
+    if cache_key and _norm_sandbox_changed_cache["key"] == cache_key:
+        return _norm_sandbox_changed_cache["data"]
+
+    def _strip_volatile(d: dict) -> dict:
+        out = {}
+        for k, v in d.items():
+            if k in NORM_VOLATILE_FIELDS:
+                continue
+            if isinstance(v, dict):
+                v = _strip_volatile(v)
+            out[k] = v
+        return out
+
+    changed = []
+    for sf in norm_sandbox.glob("*.json"):
+        if sf.stem == "_meta":
+            continue
+        af = norm_active / sf.name
+        if not af.exists():
+            changed.append(sf.stem)
+            continue
+        # Fast path: byte-identical files are unchanged
+        if sf.read_bytes() == af.read_bytes():
+            continue
+        # Slow path: strip volatile fields and compare
+        ad = _strip_volatile(json.loads(af.read_text(encoding="utf-8")))
+        sd = _strip_volatile(json.loads(sf.read_text(encoding="utf-8")))
+        if ad != sd:
+            changed.append(sf.stem)
+
+    _norm_sandbox_changed_cache["key"] = cache_key
+    _norm_sandbox_changed_cache["data"] = changed
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Expand stage endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/expand-status")
+def api_expand_status():
+    """Return expand stage version info."""
+    from cleo.expand import versioning as expand_ver
+    store = expand_ver.store
+    return {
+        "active_version": store.active_version() or "",
+        "versions": store.list_versions(),
+        "has_sandbox": store.sandbox_path().is_dir(),
+    }
+
+
+@app.get("/api/expand-rt-ids")
+def api_expand_rt_ids():
+    """List all expanded record IDs with review status."""
+    expand_active = EXPANDED_DIR / "active"
+    if not expand_active.exists():
+        raise HTTPException(404, "No active expanded version")
+
+    all_ids = sorted(
+        f.stem for f in expand_active.glob("*.json") if f.stem != "_meta"
+    )
+
+    reviews = _load_json(EXPAND_REVIEWS_PATH)
+
+    records = []
+    for record_id in all_ids:
+        reviewed = record_id in reviews
+        if record_id.startswith("BR_"):
+            source = "brand"
+        elif record_id.startswith("GW"):
+            source = "geowarehouse"
+        else:
+            source = "realtrack"
+        records.append({
+            "rt_id": record_id,
+            "source": source,
+            "reviewed": reviewed,
+            "determination": reviews.get(record_id, {}).get("determination", ""),
+        })
+
+    return records
+
+
+@app.get("/api/expanded/{rt_id}")
+def api_expanded(rt_id: str):
+    """Return expanded JSON from active version."""
+    expand_active = EXPANDED_DIR / "active" / f"{rt_id}.json"
+    if not expand_active.exists():
+        raise HTTPException(404, "Not in active expanded version")
+    return json.loads(expand_active.read_text(encoding="utf-8"))
+
+
+@app.get("/api/expand-sandbox/{rt_id}")
+def api_expand_sandbox(rt_id: str):
+    """Return expanded JSON from sandbox."""
+    expand_sandbox = EXPANDED_DIR / "sandbox" / f"{rt_id}.json"
+    if not expand_sandbox.exists():
+        raise HTTPException(404, "Not in expand sandbox")
+    return json.loads(expand_sandbox.read_text(encoding="utf-8"))
+
+
+@app.get("/api/expand-review/{rt_id}")
+def api_expand_review_get(rt_id: str):
+    """Get expansion review for a record."""
+    reviews = _load_json(EXPAND_REVIEWS_PATH)
+    return reviews.get(rt_id, {})
+
+
+@app.post("/api/expand-review/{rt_id}")
+async def api_expand_review_post(rt_id: str, request: Request):
+    """Save expansion review for a record."""
+    body = await request.json()
+    reviews = _load_json(EXPAND_REVIEWS_PATH)
+    reviews[rt_id] = {
+        "determination": body.get("determination", ""),
+        "notes": body.get("notes", ""),
+        "overrides": body.get("overrides", {}),
+        "sandbox_accepted": body.get("sandbox_accepted", False),
+        "date": datetime.now().isoformat()[:10],
+    }
+    _save_json(EXPAND_REVIEWS_PATH, reviews)
+    return {"ok": True}
+
+
+@app.get("/api/expand-regressions")
+def api_expand_regressions():
+    """Return IDs of reviewed expanded records that changed in sandbox."""
+    from cleo.expand.versioning import EXPAND_VOLATILE_FIELDS
+
+    reviews = _load_json(EXPAND_REVIEWS_PATH)
+    expand_active = EXPANDED_DIR / "active"
+    expand_sandbox = EXPANDED_DIR / "sandbox"
+
+    if not expand_active.exists() or not expand_sandbox.exists():
+        return []
+
+    regressions = []
+    for rt_id, rev in reviews.items():
+        if rev.get("sandbox_accepted"):
+            continue
+        if rev.get("determination") != "clean":
+            continue
+        af = expand_active / f"{rt_id}.json"
+        sf = expand_sandbox / f"{rt_id}.json"
+        if not af.exists() or not sf.exists():
+            continue
+        ad = json.loads(af.read_text(encoding="utf-8"))
+        sd = json.loads(sf.read_text(encoding="utf-8"))
+        for d in (ad, sd):
+            for k in EXPAND_VOLATILE_FIELDS:
+                d.pop(k, None)
+        if ad != sd:
+            regressions.append(rt_id)
+
+    return regressions
+
+
+@app.get("/api/expand-no-street-number")
+def api_expand_no_street_number():
+    """Return IDs of expanded records where property has no street number.
+
+    Checks sandbox first (if exists), otherwise active.
+    """
+    expand_sandbox = EXPANDED_DIR / "sandbox"
+    expand_active = EXPANDED_DIR / "active"
+    check_dir = expand_sandbox if expand_sandbox.exists() else expand_active
+    if not check_dir.exists():
+        return []
+
+    result = []
+    for f in check_dir.glob("*.json"):
+        if f.stem == "_meta":
+            continue
+        try:
+            data = json.loads(f.read_text())
+            prop = data.get("property", {})
+            addresses = prop.get("addresses", [])
+            if addresses and not addresses[0].get("street_number", "").strip():
+                result.append(f.stem)
+            elif not addresses:
+                result.append(f.stem)
+        except Exception:
+            continue
+    return sorted(result)
+
+
+_expand_sandbox_changed_cache: dict = {"key": None, "data": []}
+
+@app.get("/api/expand-sandbox-changed")
+def api_expand_sandbox_changed():
+    """Return IDs where sandbox expansion differs from active (cached)."""
+    from cleo.expand.versioning import EXPAND_VOLATILE_FIELDS
+
+    expand_active = EXPANDED_DIR / "active"
+    expand_sandbox = EXPANDED_DIR / "sandbox"
+
+    if not expand_active.exists() or not expand_sandbox.exists():
+        return []
+
+    try:
+        cache_key = expand_sandbox.stat().st_mtime
+    except OSError:
+        cache_key = None
+
+    if cache_key and _expand_sandbox_changed_cache["key"] == cache_key:
+        return _expand_sandbox_changed_cache["data"]
+
+    changed = []
+    for sf in expand_sandbox.glob("*.json"):
+        if sf.stem == "_meta":
+            continue
+        af = expand_active / sf.name
+        if not af.exists():
+            changed.append(sf.stem)
+            continue
+        if sf.read_bytes() == af.read_bytes():
+            continue
+        ad = json.loads(af.read_text(encoding="utf-8"))
+        sd = json.loads(sf.read_text(encoding="utf-8"))
+        for d in (ad, sd):
+            for k in EXPAND_VOLATILE_FIELDS:
+                d.pop(k, None)
+        if ad != sd:
+            changed.append(sf.stem)
+
+    _expand_sandbox_changed_cache["key"] = cache_key
+    _expand_sandbox_changed_cache["data"] = changed
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -1324,7 +1780,8 @@ def api_property_streetview(prop_id: str):
         raise HTTPException(500, "Street View fetch failed")
 
 
-@app.get("/api/properties/{prop_id}/places")
+# TODO: Dead endpoint — no frontend UI calls this. Remove after confirming no external consumers.
+@app.get("/api/properties/{prop_id}/places", deprecated=True)
 def api_property_places(prop_id: str):
     """Return cached Google Places data for a property. Never calls Google API."""
     if not GOOGLE_PLACES_PATH.exists():
@@ -1402,7 +1859,8 @@ from cleo.osm.store import OSM_TENANTS_PATH  # noqa: E402
 from cleo.osm.brand_search import OSM_BRANDS_PATH  # noqa: E402
 
 
-@app.get("/api/properties/{prop_id}/tenants")
+# TODO: Dead endpoint — tenant UI removed from PropertyDetailPage. Remove after confirming no external consumers.
+@app.get("/api/properties/{prop_id}/tenants", deprecated=True)
 def api_property_tenants(prop_id: str):
     """Return OSM tenant + brand data for a property. Merges proximity and brand search."""
     import json as _json
@@ -4359,6 +4817,815 @@ def api_footprints_stats():
         "footprints": footprint_status(),
         "matches": match_status(),
     }
+
+
+# ---------------------------------------------------------------------------
+# POC: Parcel + POI demo endpoint
+# ---------------------------------------------------------------------------
+
+_POC_DIR = DATA_DIR / "poc_parcel"
+
+
+@app.get("/api/poc/parcel-pois")
+def api_poc_parcel_pois():
+    """Return the POC parcel + POI GeoJSON for map rendering."""
+    geojson_path = _POC_DIR / "parcel_pois.geojson"
+    if not geojson_path.exists():
+        raise HTTPException(404, "POC data not found. Run: python scripts/poc_parcel_poi.py")
+    return json.loads(geojson_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/poc/summary")
+def api_poc_summary():
+    """Return the POC combined summary."""
+    summary_path = _POC_DIR / "summary.json"
+    if not summary_path.exists():
+        raise HTTPException(404, "POC data not found. Run: python scripts/poc_parcel_poi.py")
+    return json.loads(summary_path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Branded parcels endpoints (harvested city data)
+# ---------------------------------------------------------------------------
+
+_BRANDED_PARCELS_DIR = DATA_DIR / "branded_parcels"
+
+
+@app.get("/api/branded-parcels/cities")
+def api_branded_parcel_cities():
+    """List harvested cities and their stats."""
+    if not _BRANDED_PARCELS_DIR.exists():
+        return []
+    cities = []
+    for path in sorted(_BRANDED_PARCELS_DIR.glob("*.json")):
+        if path.suffix != ".json":
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            cities.append({
+                "city": data.get("city", path.stem),
+                "harvested_at": data.get("harvested_at", ""),
+                "stats": data.get("stats", {}),
+            })
+        except Exception:
+            continue
+    return cities
+
+
+@app.get("/api/branded-parcels/{city}/geojson")
+def api_branded_parcels_geojson(
+    city: str,
+    brand: str | None = None,
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+):
+    """Return branded parcel GeoJSON for a city, optionally filtered by brand and/or bbox."""
+    geo_path = _BRANDED_PARCELS_DIR / f"{city}.geojson"
+    if not geo_path.exists():
+        raise HTTPException(404, f"No harvest data for '{city}'")
+
+    data = json.loads(geo_path.read_text(encoding="utf-8"))
+    features = data.get("features", [])
+
+    # Filter by brand if specified
+    if brand:
+        brand_lower = brand.lower()
+        filtered = []
+        # Keep parcel features that have the brand + only the matching brand's POI dots
+        parcel_gis_ids = set()
+        for f in features:
+            props = f.get("properties", {})
+            if props.get("type") == "parcel":
+                brand_list = props.get("brand_list", [])
+                if any(brand_lower in b.lower() for b in brand_list):
+                    filtered.append(f)
+                    parcel_gis_ids.add(props.get("gis_id"))
+        # Second pass: only show POI dots for the matching brand
+        for f in features:
+            props = f.get("properties", {})
+            if props.get("type") == "poi":
+                poi_name = (props.get("name") or "").lower()
+                on_matching_parcel = props.get("parcel_gis_id") in parcel_gis_ids
+                name_matches = brand_lower in poi_name
+                if on_matching_parcel and name_matches:
+                    filtered.append(f)
+        features = filtered
+
+    # Filter by bounding box if specified
+    if south is not None and west is not None and north is not None and east is not None:
+        bbox_filtered = []
+        for f in features:
+            geom = f.get("geometry", {})
+            if geom.get("type") == "Point":
+                coords = geom.get("coordinates", [])
+                if len(coords) >= 2 and west <= coords[0] <= east and south <= coords[1] <= north:
+                    bbox_filtered.append(f)
+            elif geom.get("type") == "Polygon":
+                # Check if any vertex is in bbox
+                rings = geom.get("coordinates", [])
+                in_bbox = False
+                for ring in rings:
+                    for pt in ring:
+                        if west <= pt[0] <= east and south <= pt[1] <= north:
+                            in_bbox = True
+                            break
+                    if in_bbox:
+                        break
+                if in_bbox:
+                    bbox_filtered.append(f)
+        features = bbox_filtered
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/branded-parcels/{city}/brands")
+def api_branded_parcel_brands(city: str):
+    """Return all unique brands found in a city's harvested data."""
+    data_path = _BRANDED_PARCELS_DIR / f"{city}.json"
+    if not data_path.exists():
+        raise HTTPException(404, f"No harvest data for '{city}'")
+
+    data = json.loads(data_path.read_text(encoding="utf-8"))
+    brand_counts: dict[str, int] = {}
+    for parcel in data.get("parcels", {}).values():
+        for b in parcel.get("brands", []):
+            name = b.get("name", "")
+            if name:
+                brand_counts[name] = brand_counts.get(name, 0) + 1
+
+    return sorted(
+        [{"brand": name, "parcel_count": count} for name, count in brand_counts.items()],
+        key=lambda x: -x["parcel_count"],
+    )
+
+
+@app.get("/api/branded-parcels/all/geojson")
+def api_branded_parcels_all_geojson(
+    brand: str | None = None,
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+):
+    """Return branded parcel GeoJSON from ALL harvested cities.
+
+    Merges all city GeoJSON files. Required: brand filter (otherwise too much data).
+    Optional bbox filter for viewport-based loading.
+    """
+    if not brand:
+        raise HTTPException(400, "brand parameter required for all-cities query")
+
+    if not _BRANDED_PARCELS_DIR.exists():
+        return {"type": "FeatureCollection", "features": []}
+
+    all_features = []
+    brand_lower = brand.lower()
+
+    for geo_path in sorted(_BRANDED_PARCELS_DIR.glob("*.geojson")):
+        try:
+            data = json.loads(geo_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        features = data.get("features", [])
+        city_name = geo_path.stem
+
+        # Brand filter (always applied for all-cities)
+        parcel_gis_ids = set()
+        for f in features:
+            props = f.get("properties", {})
+            if props.get("type") == "parcel":
+                brand_list = props.get("brand_list", [])
+                if any(brand_lower in b.lower() for b in brand_list):
+                    props["city"] = city_name
+                    all_features.append(f)
+                    parcel_gis_ids.add(props.get("gis_id"))
+
+        for f in features:
+            props = f.get("properties", {})
+            if props.get("type") == "poi":
+                poi_name = (props.get("name") or "").lower()
+                if props.get("parcel_gis_id") in parcel_gis_ids and brand_lower in poi_name:
+                    props["city"] = city_name
+                    all_features.append(f)
+
+    # Bbox filter
+    if south is not None and west is not None and north is not None and east is not None:
+        bbox_filtered = []
+        for f in all_features:
+            geom = f.get("geometry", {})
+            if geom.get("type") == "Point":
+                coords = geom.get("coordinates", [])
+                if len(coords) >= 2 and west <= coords[0] <= east and south <= coords[1] <= north:
+                    bbox_filtered.append(f)
+            elif geom.get("type") == "Polygon":
+                rings = geom.get("coordinates", [])
+                in_bbox = any(
+                    west <= pt[0] <= east and south <= pt[1] <= north
+                    for ring in rings for pt in ring
+                )
+                if in_bbox:
+                    bbox_filtered.append(f)
+        all_features = bbox_filtered
+
+    return {"type": "FeatureCollection", "features": all_features}
+
+
+@app.get("/api/branded-parcels/all/brands")
+def api_branded_parcels_all_brands():
+    """Return all unique brands across ALL harvested cities with counts."""
+    if not _BRANDED_PARCELS_DIR.exists():
+        return []
+
+    brand_counts: dict[str, dict] = {}  # brand -> {parcels, cities}
+
+    for data_path in sorted(_BRANDED_PARCELS_DIR.glob("*.json")):
+        if data_path.stem == "summary":
+            continue
+        try:
+            data = json.loads(data_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        city = data.get("city", data_path.stem)
+        for parcel in data.get("parcels", {}).values():
+            for b in parcel.get("brands", []):
+                name = b.get("name", "")
+                if name:
+                    if name not in brand_counts:
+                        brand_counts[name] = {"parcels": 0, "cities": set()}
+                    brand_counts[name]["parcels"] += 1
+                    brand_counts[name]["cities"].add(city)
+
+    return sorted(
+        [
+            {"brand": name, "parcel_count": info["parcels"], "city_count": len(info["cities"])}
+            for name, info in brand_counts.items()
+        ],
+        key=lambda x: -x["parcel_count"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parcel Registry API (new parcel-centric endpoints)
+# ---------------------------------------------------------------------------
+
+_parcel_registry_cache: dict | None = None
+_parcel_registry_mtime: float = 0
+
+
+def _get_parcel_registry() -> dict:
+    """Load and cache parcel_registry.json, reloading when file changes."""
+    global _parcel_registry_cache, _parcel_registry_mtime
+    if not PARCEL_REGISTRY_PATH.exists():
+        return {"parcels": {}, "indexes": {}, "meta": {}}
+    mtime = PARCEL_REGISTRY_PATH.stat().st_mtime
+    if _parcel_registry_cache is not None and _parcel_registry_mtime == mtime:
+        return _parcel_registry_cache
+    _parcel_registry_cache = json.loads(PARCEL_REGISTRY_PATH.read_text(encoding="utf-8"))
+    _parcel_registry_mtime = mtime
+    return _parcel_registry_cache
+
+
+@app.get("/api/parcels/registry")
+def api_parcel_registry_list(
+    city: str | None = None,
+    brand: str | None = None,
+    has_transactions: bool | None = None,
+    min_price: int | None = None,
+    max_price: int | None = None,
+    min_date: str | None = None,
+    max_date: str | None = None,
+    offset: int = 0,
+    limit: int = 500,
+):
+    """List/search parcels from the registry with filters.
+
+    Returns summary records (no geometry) for table display.
+    Pagination via offset/limit.
+    """
+    reg = _get_parcel_registry()
+    parcels = reg.get("parcels", {})
+
+    results = []
+    for arn, rec in parcels.items():
+        if city and (rec.get("city") or "").upper() != city.upper():
+            continue
+
+        if brand:
+            brand_names = [b.get("name", "").lower() for b in rec.get("brands", [])]
+            if not any(brand.lower() in bn for bn in brand_names):
+                continue
+
+        if has_transactions is not None:
+            if has_transactions and not rec.get("transactions"):
+                continue
+            if not has_transactions and rec.get("transactions"):
+                continue
+
+        if min_price or max_price:
+            prices = [t.get("price") for t in rec.get("transactions", []) if t.get("price")]
+            if not prices:
+                if min_price:
+                    continue
+            else:
+                latest_price = prices[0]
+                if min_price and latest_price < min_price:
+                    continue
+                if max_price and latest_price > max_price:
+                    continue
+
+        if min_date or max_date:
+            dates = [t.get("date", "") for t in rec.get("transactions", []) if t.get("date")]
+            if not dates:
+                continue
+            latest_date = dates[0]
+            if min_date and latest_date < min_date:
+                continue
+            if max_date and latest_date > max_date:
+                continue
+
+        txns = rec.get("transactions", [])
+        latest_txn = txns[0] if txns else {}
+        brand_names_sorted = sorted(set(b.get("name", "") for b in rec.get("brands", []) if b.get("name")))
+
+        results.append({
+            "arn": arn,
+            "pid": rec.get("pid"),
+            "pin": rec.get("pin"),
+            "city": rec.get("city"),
+            "address": rec["addresses"][0] if rec.get("addresses") else "",
+            "addresses": rec.get("addresses", []),
+            "population": rec.get("population"),
+            "zoning": rec.get("zoning"),
+            "area_sqm": rec.get("area_sqm"),
+            "brand_count": len(brand_names_sorted),
+            "brands": brand_names_sorted[:5],
+            "transaction_count": len(txns),
+            "latest_price": latest_txn.get("price"),
+            "latest_date": latest_txn.get("date"),
+            "latest_buyer": latest_txn.get("buyer"),
+            "has_assessment": bool(rec.get("assessment")),
+            "sources": rec.get("sources", []),
+            "centroid": rec.get("centroid"),
+        })
+
+    total = len(results)
+    results = results[offset:offset + limit]
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "results": results,
+    }
+
+
+@app.get("/api/parcels/registry/stats")
+def api_parcel_registry_stats():
+    """Return registry statistics for the dashboard."""
+    reg = _get_parcel_registry()
+    meta = reg.get("meta", {})
+    parcels = reg.get("parcels", {})
+
+    city_counts: dict[str, int] = {}
+    for rec in parcels.values():
+        c = rec.get("city") or "Unknown"
+        city_counts[c] = city_counts.get(c, 0) + 1
+
+    return {
+        "meta": meta,
+        "city_counts": dict(sorted(city_counts.items(), key=lambda x: -x[1])[:50]),
+        "total_parcels": meta.get("total", 0),
+    }
+
+
+@app.get("/api/parcels/registry/filters")
+def api_parcel_registry_filters():
+    """Return available filter values for the UI."""
+    reg = _get_parcel_registry()
+    parcels = reg.get("parcels", {})
+
+    cities: dict[str, int] = {}
+    brands: dict[str, int] = {}
+    for rec in parcels.values():
+        c = rec.get("city")
+        if c:
+            cities[c] = cities.get(c, 0) + 1
+        for b in rec.get("brands", []):
+            name = b.get("name", "")
+            if name:
+                brands[name] = brands.get(name, 0) + 1
+
+    return {
+        "cities": sorted(
+            [{"name": c, "count": n} for c, n in cities.items()],
+            key=lambda x: -x["count"],
+        ),
+        "brands": sorted(
+            [{"name": b, "count": n} for b, n in brands.items()],
+            key=lambda x: -x["count"],
+        )[:200],
+    }
+
+
+@app.get("/api/parcels/registry/geojson")
+def api_parcel_registry_geojson(
+    south: float | None = None,
+    west: float | None = None,
+    north: float | None = None,
+    east: float | None = None,
+    city: str | None = None,
+    brand: str | None = None,
+    has_transactions: bool | None = None,
+    min_price: int | None = None,
+    max_price: int | None = None,
+):
+    """Return GeoJSON FeatureCollection for map display.
+
+    Bbox required for viewport-based loading. Features include
+    polygon geometry + summary properties for popup/styling.
+    Cap at 3000 features per request.
+    """
+    reg = _get_parcel_registry()
+    parcels = reg.get("parcels", {})
+
+    features = []
+    for arn, rec in parcels.items():
+        centroid = rec.get("centroid")
+        if not centroid:
+            continue
+
+        if south is not None and west is not None and north is not None and east is not None:
+            lat, lng = centroid
+            if not (south <= lat <= north and west <= lng <= east):
+                continue
+
+        if city and (rec.get("city") or "").upper() != city.upper():
+            continue
+        if brand:
+            brand_names = [b.get("name", "").lower() for b in rec.get("brands", [])]
+            if not any(brand.lower() in bn for bn in brand_names):
+                continue
+        if has_transactions is not None:
+            if has_transactions and not rec.get("transactions"):
+                continue
+            if not has_transactions and rec.get("transactions"):
+                continue
+        if min_price or max_price:
+            prices = [t.get("price") for t in rec.get("transactions", []) if t.get("price")]
+            latest_price = prices[0] if prices else None
+            if min_price and (latest_price is None or latest_price < min_price):
+                continue
+            if max_price and latest_price and latest_price > max_price:
+                continue
+
+        txns = rec.get("transactions", [])
+        latest = txns[0] if txns else {}
+        brand_list = sorted(set(b.get("name", "") for b in rec.get("brands", []) if b.get("name")))
+
+        geometry = rec.get("geometry")
+        if not geometry:
+            geometry = {
+                "type": "Point",
+                "coordinates": [centroid[1], centroid[0]],
+            }
+
+        features.append({
+            "type": "Feature",
+            "geometry": geometry,
+            "properties": {
+                "arn": arn,
+                "pid": rec.get("pid"),
+                "city": rec.get("city"),
+                "address": rec["addresses"][0] if rec.get("addresses") else "",
+                "brand_count": len(brand_list),
+                "brands": brand_list[:3],
+                "transaction_count": len(txns),
+                "latest_price": latest.get("price"),
+                "latest_date": latest.get("date"),
+                "has_transactions": bool(txns),
+                "population": rec.get("population"),
+                "zoning": rec.get("zoning"),
+                "sources": rec.get("sources", []),
+            },
+        })
+
+        if len(features) >= 3000:
+            break
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/parcels/registry/{arn}")
+def api_parcel_registry_detail(arn: str):
+    """Return full detail for a single parcel, including geometry."""
+    reg = _get_parcel_registry()
+    parcels = reg.get("parcels", {})
+
+    if arn not in parcels:
+        if len(arn) == 15:
+            arn_20 = arn + "00000"
+            if arn_20 in parcels:
+                arn = arn_20
+            else:
+                raise HTTPException(404, f"Parcel not found: {arn}")
+        else:
+            raise HTTPException(404, f"Parcel not found: {arn}")
+
+    return {**parcels[arn], "arn": arn}
+
+
+@app.get("/api/parcels/registry/by-pid/{pid}")
+def api_parcel_by_pid(pid: str):
+    """Look up a parcel by its P-ID. Returns redirect ARN."""
+    reg = _get_parcel_registry()
+    pid_to_arn = reg.get("indexes", {}).get("pid_to_arn", {})
+    arn = pid_to_arn.get(pid)
+    if not arn:
+        raise HTTPException(404, f"No parcel for P-ID: {pid}")
+    return {"arn": arn, "pid": pid}
+
+
+# ---------------------------------------------------------------------------
+# Monitor API — pipeline health metrics
+# ---------------------------------------------------------------------------
+
+@app.get("/api/monitor")
+def api_monitor():
+    """Return full pipeline health metrics and quality gate results."""
+    from cleo.monitor.collectors import collect_all
+    from cleo.monitor.gates import evaluate_gates
+
+    metrics = collect_all()
+    gates = evaluate_gates(metrics)
+
+    return {
+        **metrics,
+        "gates": gates,
+    }
+
+
+@app.get("/api/monitor/gates")
+def api_monitor_gates():
+    """Return only triggered quality gates."""
+    from cleo.monitor.collectors import collect_all
+    from cleo.monitor.gates import evaluate_gates
+
+    metrics = collect_all()
+    return evaluate_gates(metrics)
+
+
+@app.post("/api/monitor/snapshot")
+def api_monitor_snapshot():
+    """Save a timestamped metrics snapshot and return it."""
+    import json as _json
+    from cleo.monitor.collectors import collect_all
+    from cleo.monitor.gates import evaluate_gates
+    from cleo.config import METRICS_DIR
+
+    metrics = collect_all()
+    gates = evaluate_gates(metrics)
+    result = {**metrics, "gates": gates}
+
+    ts = metrics["collected_at"].replace(":", "-")
+    snap_path = METRICS_DIR / f"snapshot_{ts}.json"
+    snap_path.write_text(_json.dumps(result, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    return {"saved": str(snap_path), **result}
+
+
+@app.get("/api/monitor/snapshots")
+def api_monitor_snapshots():
+    """List available metric snapshots."""
+    from cleo.config import METRICS_DIR
+    snapshots = []
+    if METRICS_DIR.exists():
+        for f in sorted(METRICS_DIR.glob("snapshot_*.json"), reverse=True):
+            snapshots.append({
+                "filename": f.name,
+                "timestamp": f.name.replace("snapshot_", "").replace(".json", "").replace("-", ":", 2),
+                "size_kb": round(f.stat().st_size / 1024, 1),
+            })
+    return snapshots
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Trace — follow a single record through every stage
+# ---------------------------------------------------------------------------
+
+@app.get("/api/trace/{record_id}")
+def api_trace(record_id: str):
+    """Trace a single record (RT ID, GW ID, or Brand ID) through every pipeline stage."""
+    from cleo.config import (
+        HTML_INDEX_PATH, TRACKER_PATH, PARSED_DIR, NORMALIZED_DIR,
+        EXPANDED_DIR, COORDINATES_PATH, PROPERTIES_PATH,
+        PROPERTY_PARCEL_INDEX_PATH, PARCELS_PATH, COMPILED_DIR,
+    )
+
+    result: dict = {"id": record_id, "source": None, "stages": {}}
+
+    # Detect source type
+    rid = record_id.upper()
+    if rid.startswith("RT"):
+        result["source"] = "realtrack"
+    elif rid.startswith("GW"):
+        result["source"] = "geowarehouse"
+    elif rid.startswith("BR"):
+        result["source"] = "brand"
+    else:
+        raise HTTPException(400, f"Unrecognized ID format: {record_id}")
+
+    # --- Stage: Ingest (RT only) ---
+    if result["source"] == "realtrack":
+        ingest: dict = {}
+        try:
+            idx = json.loads(HTML_INDEX_PATH.read_text(encoding="utf-8"))
+            subpath = idx.get(record_id)
+            if subpath:
+                ingest["html_subpath"] = subpath
+        except FileNotFoundError:
+            pass
+        try:
+            tracker = json.loads(TRACKER_PATH.read_text(encoding="utf-8"))
+            t = tracker.get(record_id)
+            if t:
+                ingest["first_seen"] = t.get("ts")
+                ingest["property_type"] = t.get("type")
+        except FileNotFoundError:
+            pass
+        if ingest:
+            result["stages"]["ingest"] = ingest
+
+    # --- Stage: Parsed (RT only) ---
+    if result["source"] == "realtrack":
+        parsed_active = PARSED_DIR / "active"
+        pf = parsed_active / f"{record_id}.json"
+        if pf.exists():
+            result["stages"]["parsed"] = json.loads(pf.read_text(encoding="utf-8"))
+
+    # --- Stage: Normalized ---
+    norm_active = NORMALIZED_DIR / "active"
+    nf = norm_active / f"{record_id}.json"
+    if nf.exists():
+        result["stages"]["normalized"] = json.loads(nf.read_text(encoding="utf-8"))
+
+    # --- Stage: Expanded ---
+    exp_active = EXPANDED_DIR / "active"
+    ef = exp_active / f"{record_id}.json"
+    if ef.exists():
+        result["stages"]["expanded"] = json.loads(ef.read_text(encoding="utf-8"))
+
+    # --- Stage: Geocoded (look up each canonical address) ---
+    expanded = result["stages"].get("expanded", {})
+    if expanded:
+        try:
+            coords_data = json.loads(COORDINATES_PATH.read_text(encoding="utf-8"))
+            addresses_store = coords_data.get("addresses", {})
+        except FileNotFoundError:
+            addresses_store = {}
+
+        geocoded: dict = {}
+        for role in ("property", "seller", "buyer", "property_alt", "owner_address"):
+            role_data = expanded.get(role, {})
+            addrs = role_data.get("addresses", [])
+            for addr in addrs:
+                canon = addr.get("canonical", "")
+                if canon and canon in addresses_store:
+                    geocoded[canon] = addresses_store[canon]
+        if geocoded:
+            result["stages"]["geocoded"] = geocoded
+
+    # --- Stage: Property ---
+    try:
+        props_data = json.loads(PROPERTIES_PATH.read_text(encoding="utf-8"))
+        props = props_data.get("properties", {})
+    except FileNotFoundError:
+        props = {}
+
+    matched_prop = None
+    for pid, pdata in props.items():
+        rt_ids = pdata.get("rt_ids", [])
+        # For GW/brand, check source-specific fields
+        sources = pdata.get("sources", [])
+        if record_id in rt_ids:
+            matched_prop = {"property_id": pid, **pdata}
+            break
+        if result["source"] == "geowarehouse" and "gw" in sources:
+            gw_data = pdata.get("gw_data", {})
+            if gw_data.get("gw_id") == record_id:
+                matched_prop = {"property_id": pid, **pdata}
+                break
+
+    if matched_prop:
+        result["stages"]["property"] = matched_prop
+
+        # --- Stage: Parcels (via property ID) ---
+        pid = matched_prop["property_id"]
+        try:
+            ppi = json.loads(PROPERTY_PARCEL_INDEX_PATH.read_text(encoding="utf-8"))
+            parcel_match = ppi.get("matches", {}).get(pid)
+            if parcel_match:
+                result["stages"]["parcel"] = {"property_id": pid, **parcel_match}
+        except FileNotFoundError:
+            pass
+
+    # --- Stage: Compiled ---
+    compiled_active = COMPILED_DIR / "active"
+    cf = compiled_active / f"{record_id}.json"
+    if cf.exists():
+        result["stages"]["compiled"] = json.loads(cf.read_text(encoding="utf-8"))
+
+    # Check if record exists at all
+    if not result["stages"]:
+        raise HTTPException(404, f"No data found for {record_id}")
+
+    return result
+
+
+@app.get("/api/trace/search/{query}")
+def api_trace_search(query: str):
+    """Search for record IDs matching a query (partial RT ID, address, etc.)."""
+    from cleo.config import PARSED_DIR, NORMALIZED_DIR
+
+    query_upper = query.upper().strip()
+    results: list[dict] = []
+    limit = 20
+
+    # Search by RT ID prefix
+    parsed_active = PARSED_DIR / "active"
+    if parsed_active.is_dir():
+        for f in sorted(parsed_active.glob("RT*.json")):
+            if f.stem.upper().startswith(query_upper) or query_upper in f.stem.upper():
+                if len(results) < limit:
+                    try:
+                        rec = json.loads(f.read_text(encoding="utf-8"))
+                        addr = rec.get("transaction", {}).get("address", {})
+                        results.append({
+                            "id": f.stem,
+                            "source": "realtrack",
+                            "label": f"{f.stem} — {addr.get('address', '')} {addr.get('city', '')}".strip(),
+                        })
+                    except Exception:
+                        results.append({"id": f.stem, "source": "realtrack", "label": f.stem})
+
+    # Search by GW ID
+    norm_active = NORMALIZED_DIR / "active"
+    if norm_active.is_dir():
+        for f in sorted(norm_active.glob("GW*.json")):
+            if f.stem.upper().startswith(query_upper) or query_upper in f.stem.upper():
+                if len(results) < limit:
+                    try:
+                        rec = json.loads(f.read_text(encoding="utf-8"))
+                        prop = rec.get("property", {})
+                        city = prop.get("normalized_city", prop.get("raw_city", ""))
+                        results.append({
+                            "id": f.stem,
+                            "source": "geowarehouse",
+                            "label": f"{f.stem} — {prop.get('raw_address', '')} {city}".strip(),
+                        })
+                    except Exception:
+                        results.append({"id": f.stem, "source": "geowarehouse", "label": f.stem})
+
+        # Search by brand ID
+        for f in sorted(norm_active.glob("BR_*.json")):
+            if f.stem.upper().startswith(query_upper) or query_upper in f.stem.upper():
+                if len(results) < limit:
+                    try:
+                        rec = json.loads(f.read_text(encoding="utf-8"))
+                        prop = rec.get("property", {})
+                        results.append({
+                            "id": f.stem,
+                            "source": "brand",
+                            "label": f"{f.stem} — {prop.get('raw_address', '')} {prop.get('normalized_city', '')}".strip(),
+                        })
+                    except Exception:
+                        results.append({"id": f.stem, "source": "brand", "label": f.stem})
+
+    # Address search (if query doesn't look like an ID prefix)
+    if not query_upper.startswith(("RT", "GW", "BR")) and len(query) >= 3:
+        if parsed_active.is_dir():
+            count = 0
+            for f in parsed_active.glob("RT*.json"):
+                if count >= limit - len(results):
+                    break
+                try:
+                    rec = json.loads(f.read_text(encoding="utf-8"))
+                    addr = rec.get("transaction", {}).get("address", {})
+                    full_addr = f"{addr.get('address', '')} {addr.get('city', '')}".upper()
+                    if query_upper in full_addr:
+                        results.append({
+                            "id": f.stem,
+                            "source": "realtrack",
+                            "label": f"{f.stem} — {addr.get('address', '')} {addr.get('city', '')}".strip(),
+                        })
+                        count += 1
+                except Exception:
+                    pass
+
+    return results[:limit]
 
 
 # ---------------------------------------------------------------------------

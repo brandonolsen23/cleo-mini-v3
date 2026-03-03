@@ -77,13 +77,25 @@ def main():
         total_match = _TOTAL_PATTERN.search(resp.text)
         if total_match:
             total = int(total_match.group(1))
-            local_count = tracker.count_by_type(prop_type)
-            target_gap = total - local_count
             total_pages = (total + 49) // 50
-            logger.info(
-                "[%s] Realtrack total: %d | Local: %d | Gap: %d | Pages to scan: %d",
-                prop_type, total, local_count, target_gap, total_pages - start_page,
-            )
+            if prop_type == "all":
+                # "All" includes every type — gap is unknown since most are
+                # already saved under their specific type.  We scan all pages
+                # and rely on the seen-check to skip known IDs.
+                local_count = tracker.count
+                target_gap = None
+                logger.info(
+                    "[%s] Realtrack total: %d | Total local (all types): %d | "
+                    "Pages: %d | scanning for uncategorized orphans",
+                    prop_type, total, local_count, total_pages,
+                )
+            else:
+                local_count = tracker.count_by_type(prop_type)
+                target_gap = total - local_count
+                logger.info(
+                    "[%s] Realtrack total: %d | Local: %d | Gap: %d | Pages to scan: %d",
+                    prop_type, total, local_count, target_gap, total_pages - start_page,
+                )
         else:
             total_pages = 316
             logger.warning("Could not extract total, using %d pages", total_pages)

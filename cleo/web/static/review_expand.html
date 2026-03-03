@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Expand Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  .review-body { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
+  .field-changed { background: #fffef5; border-left: 3px solid #ffd43b; padding-left: 7px; }
+  .addr-entry { margin-bottom: 8px; padding: 8px; background: #f8f9fa; border-radius: 4px; }
+  .addr-entry.skip { opacity: 0.6; }
+  .addr-canonical { font-weight: 600; font-size: 13px; }
+  .addr-skip-badge { background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 6px; }
+  .addr-detail { font-size: 11px; color: #999; margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Expand Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse">Parse</a>
+  <a href="/review/normalize">Normalize</a>
+  <a href="/review/expand" class="active">Expand</a>
+  <a href="/review/extract">Extract (legacy)</a>
+  <a href="/review/geocode" class="disabled">Geocode</a>
+  <a href="/review/parcels" class="disabled">Parcels</a>
+  <a href="/review/properties" class="disabled">Properties</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">REGRESSION — Sandbox expansion differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="reg-reject">Reject Sandbox</button>
+</div>
+
+<div class="columns">
+  <!-- Pane 1: Normalized source (input to expander) -->
+  <div class="column" id="col-left">
+    <div class="col-header"><span>Normalized (Input)</span></div>
+    <div class="empty-state" id="left-empty">Select a record</div>
+    <div class="parsed-data" id="pane-left" style="display:none;"></div>
+  </div>
+  <!-- Pane 2: Active expanded -->
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active Expanded</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select a record</div>
+    <div class="norm-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <!-- Pane 3: Sandbox expanded -->
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox Expanded</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select a record</div>
+    <div class="norm-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about expansion quality..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div>
+      <div class="review-pane-title">Overrides</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Notes only (no field overrides for expand)</label></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── State ──
+let normData = null;
+let expandActive = null;
+let expandSandbox = null;
+let hasExpandSandbox = false;
+
+// ── Render normalized source fields (pane 1) ──
+function renderNormSource(container, data) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+  const src = data.source || '';
+
+  // Header info
+  if (src === 'brand') {
+    html += section('Source', [
+      field('Brand', data.brand),
+      field('Store', data.store_name),
+    ]);
+  } else if (src === 'geowarehouse') {
+    html += section('Source', [
+      field('GW ID', data.gw_id),
+      field('PIN', data.pin),
+    ]);
+  }
+
+  // Show normalized address blocks
+  for (const [role, label] of [['property', 'Property'], ['seller', 'Seller'], ['buyer', 'Buyer'], ['owner_address', 'Owner']]) {
+    const block = data[role];
+    if (!block || block.category === 'empty') continue;
+
+    const fields = [
+      field('Raw', block.raw_address),
+      field('Number', block.street_number),
+      field('Name', block.street_name),
+      field('Suffix', block.street_suffix),
+    ];
+    if (block.street_direction) fields.push(field('Direction', block.street_direction));
+    if (block.unit) fields.push(field('Unit', `${block.unit_type || ''} ${block.unit}`.trim()));
+    if (block.po_box) fields.push(field('PO Box', block.po_box));
+    if (block.rural_route) fields.push(field('Rural Route', block.rural_route));
+    fields.push(field('City', block.normalized_city));
+    if (block.normalized_province) fields.push(field('Province', block.normalized_province));
+    if (block.normalized_postal_code) fields.push(field('Postal Code', block.normalized_postal_code));
+    if (block.category) fields.push(field('Category', block.category));
+    if (block.address_scope && block.address_scope !== 'ontario') {
+      fields.push(field('Scope', block.address_scope));
+    }
+
+    html += section(label, fields);
+  }
+
+  // Alternates
+  const alts = data.property_alt || [];
+  for (let i = 0; i < alts.length; i++) {
+    const a = alts[i];
+    if (!a || a.category === 'empty') continue;
+    const fields = [
+      field('Raw', a.raw_address),
+      field('Number', a.street_number),
+      field('Name', a.street_name),
+      field('Suffix', a.street_suffix),
+    ];
+    if (a.street_direction) fields.push(field('Direction', a.street_direction));
+    if (a.unit) fields.push(field('Unit', `${a.unit_type || ''} ${a.unit}`.trim()));
+    fields.push(field('City', a.normalized_city));
+    html += section(`Alt ${i+1}`, fields);
+  }
+
+  container.innerHTML = html;
+}
+
+// ── Render expanded data (pane 2/3) ──
+function renderExpanded(container, data, compareData) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+
+  for (const [role, label] of [['property', 'Property'], ['property_alt', 'Alt Properties'], ['seller', 'Seller'], ['buyer', 'Buyer'], ['owner_address', 'Owner']]) {
+    const block = data[role];
+    if (!block) continue;
+
+    // property_alt is an array of blocks
+    if (role === 'property_alt') {
+      const cmpAlts = compareData?.[role] || [];
+      for (let i = 0; i < block.length; i++) {
+        html += renderAddressEntries(`Alt ${i+1}`, block[i], cmpAlts[i]);
+      }
+      continue;
+    }
+
+    const cmpBlock = compareData?.[role];
+    html += renderAddressEntries(label, block, cmpBlock);
+  }
+
+  // Raw coords (brand)
+  if (data.raw_coords) {
+    html += section('Scraper Coords', [
+      field('Lat', data.raw_coords.lat),
+      field('Lng', data.raw_coords.lng),
+    ]);
+  }
+
+  container.innerHTML = html;
+}
+
+function renderAddressEntries(title, block, cmpBlock) {
+  if (!block || !block.addresses) return '';
+
+  const cmpAddrs = cmpBlock?.addresses || [];
+  let html = `<div class="section"><div class="section-title">${escHtml(title)} (${block.addresses.length} address${block.addresses.length !== 1 ? 'es' : ''})</div>`;
+
+  for (let i = 0; i < block.addresses.length; i++) {
+    const addr = block.addresses[i];
+    const cmpAddr = cmpAddrs[i];
+    const skip = addr.skip_geocode;
+    const changed = cmpAddr && addr.canonical !== cmpAddr.canonical;
+
+    html += `<div class="addr-entry${skip ? ' skip' : ''}${changed ? ' field-changed' : ''}">`;
+    html += `<div class="addr-canonical">${escHtml(addr.canonical)}`;
+    if (skip) html += `<span class="addr-skip-badge">skip</span>`;
+    html += `</div>`;
+
+    // Show unit detail if present (postal code is now in the canonical string)
+    if (addr.unit) {
+      html += `<div class="addr-detail">${escHtml((addr.unit_type || 'Unit') + ' ' + addr.unit)}</div>`;
+    }
+
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+// ── Filters ──
+function expandBuildFilters() {
+  const records = review ? review.getAllRecords() : [];
+  const dets = [
+    { value: 'clean', label: 'Clean' },
+    { value: 'expander_issue', label: 'Expander Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream' },
+  ];
+  const sources = [
+    { value: 'src_realtrack', label: 'Realtrack', key: 'realtrack' },
+    { value: 'src_brand', label: 'Brands', key: 'brand' },
+    { value: 'src_geowarehouse', label: 'GeoWarehouse', key: 'geowarehouse' },
+  ];
+  const changedCount = records.filter(r => r.sandbox_changed).length;
+  const noStreetNumCount = records.filter(r => r.no_street_number).length;
+  const filters = [
+    { value: 'all', label: 'All records', fn: () => true },
+    { value: 'reviewed', label: 'Reviewed', fn: r => r.reviewed, count: records.filter(r => r.reviewed).length },
+    { value: 'unreviewed', label: 'Unreviewed', fn: r => !r.reviewed, count: records.filter(r => !r.reviewed).length },
+    { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+    ...(changedCount > 0 ? [{ value: 'sandbox_changed', label: 'Sandbox changed', fn: r => r.sandbox_changed, count: changedCount }] : []),
+    ...(noStreetNumCount > 0 ? [{ value: 'no_street_number', label: 'No street number', fn: r => r.no_street_number, count: noStreetNumCount }] : []),
+  ];
+  for (const s of sources) {
+    const cnt = records.filter(r => r.source === s.key).length;
+    if (cnt > 0) filters.push({ value: s.value, label: s.label, fn: r => r.source === s.key, count: cnt });
+  }
+  for (const d of dets) {
+    const cnt = records.filter(r => r.determination === d.value).length;
+    if (cnt > 0) filters.push({ value: d.value, label: d.label, fn: r => r.determination === d.value, count: cnt });
+  }
+  return filters;
+}
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'expand',
+  recordsUrl: '/api/expand-rt-ids',
+  statusUrl: '/api/expand-status',
+  regressionsUrl: '/api/expand-regressions',
+  reviewUrl: '/api/expand-review',
+  rejectDetermination: 'expander_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'expander_issue', label: 'Expander Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream (normalizer)' },
+  ],
+
+  getStatusText(status) {
+    hasExpandSandbox = status.has_sandbox || false;
+    document.getElementById('active-version').textContent = status.active_version || 'not built';
+    document.getElementById('sandbox-version').textContent = hasExpandSandbox ? 'sandbox' : '';
+    return `Expand: ${status.active_version || 'not built'} | Sandbox: ${hasExpandSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    let changedSet = new Set();
+    if (hasExpandSandbox) {
+      try {
+        const res = await fetch('/api/expand-sandbox-changed');
+        if (res.ok) changedSet = new Set(await res.json());
+      } catch {}
+    }
+    let noStreetNumSet = new Set();
+    try {
+      const res = await fetch('/api/expand-no-street-number');
+      if (res.ok) noStreetNumSet = new Set(await res.json());
+    } catch {}
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+      r.sandbox_changed = changedSet.has(r.rt_id);
+      r.no_street_number = noStreetNumSet.has(r.rt_id);
+    }
+    return {};
+  },
+
+  buildFilters(extra) { return expandBuildFilters(); },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // Fetch normalized source (pane 1)
+    normData = null;
+    try {
+      const r = await fetch(`/api/normalized/${rtId}`);
+      if (r.ok) normData = await r.json();
+    } catch {}
+
+    // Fetch expanded active + sandbox
+    expandActive = null;
+    expandSandbox = null;
+    try { const r = await fetch(`/api/expanded/${rtId}`); if (r.ok) expandActive = await r.json(); } catch {}
+    if (hasExpandSandbox) {
+      try { const r = await fetch(`/api/expand-sandbox/${rtId}`); if (r.ok) expandSandbox = await r.json(); } catch {}
+    }
+
+    // Pane 1: Normalized source
+    const leftEmpty = document.getElementById('left-empty');
+    if (normData) {
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      renderNormSource(panes.left, normData);
+    } else {
+      panes.left.style.display = 'none';
+      leftEmpty.style.display = 'flex';
+      leftEmpty.textContent = 'No normalized data';
+    }
+
+    // Pane 2: Active expanded
+    const middleEmpty = document.getElementById('middle-empty');
+    if (expandActive) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      renderExpanded(panes.middle, expandActive);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'Not yet expanded';
+    }
+
+    // Pane 3: Sandbox expanded (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (expandSandbox) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      renderExpanded(panes.right, expandSandbox, expandActive);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasExpandSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+  },
+
+  getOverrides() { return {}; },
+  setOverrides() {},
+  clearOverrides() {},
+});
+</script>
+</body>
+</html>

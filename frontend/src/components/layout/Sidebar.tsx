@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { Receipt, Buildings, Users, UserCircle, Storefront, MapPin, SquaresFour, GearSix, AddressBook, Handshake, Strategy, EnvelopeSimple } from "@phosphor-icons/react";
+import { Receipt, Buildings, MapPin, SquaresFour, GearSix, ChartBar, Path } from "@phosphor-icons/react";
 import { Heading } from "@radix-ui/themes";
 import { cn } from "@/lib/utils";
 import type { Icon } from "@phosphor-icons/react";
@@ -12,26 +12,16 @@ const navGroups: NavGroup[] = [
     label: "",
     items: [
       { to: "/dashboard", label: "Dashboard", icon: SquaresFour },
+      { to: "/parcels", label: "Parcels", icon: Buildings },
       { to: "/transactions", label: "Transactions", icon: Receipt },
-      { to: "/properties", label: "Properties", icon: Buildings },
-      { to: "/parties", label: "Companies", icon: Users },
-      { to: "/contacts", label: "Contacts", icon: UserCircle },
-      { to: "/brands", label: "Brands", icon: Storefront },
-      { to: "/operators", label: "Operators", icon: Strategy },
       { to: "/map", label: "Map", icon: MapPin },
-    ],
-  },
-  {
-    label: "CRM",
-    items: [
-      { to: "/crm/contacts", label: "CRM Contacts", icon: AddressBook },
-      { to: "/crm/deals", label: "Deals", icon: Handshake },
-      { to: "/outreach", label: "Outreach", icon: EnvelopeSimple },
     ],
   },
   {
     label: "",
     items: [
+      { to: "/trace", label: "Trace", icon: Path },
+      { to: "/monitor", label: "Monitor", icon: ChartBar },
       { to: "/admin", label: "Admin", icon: GearSix },
     ],
   },
