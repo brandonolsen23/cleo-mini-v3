@@ -1,18 +1,25 @@
-import React from "react";
-import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
-import { Theme } from "@radix-ui/themes";
-import App from "./App";
-import "@fontsource-variable/geist";
 import "@radix-ui/themes/styles.css";
 import "./index.css";
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { BrowserRouter } from "react-router-dom";
+import { Theme } from "@radix-ui/themes";
+import App from "./App";
+import { THEME } from "./lib/theme";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
     <BrowserRouter basename="/app">
-      <Theme accentColor="jade" grayColor="slate" radius="large" panelBackground="translucent">
+      <Theme
+        accentColor={THEME.accentColor}
+        grayColor={THEME.grayColor}
+        radius={THEME.radius}
+        scaling={THEME.scaling}
+        appearance="light"
+      >
         <App />
       </Theme>
     </BrowserRouter>
-  </React.StrictMode>
+  </StrictMode>
 );

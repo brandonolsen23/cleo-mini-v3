@@ -9,6 +9,10 @@ Cleo Mini V3 is a Python CLI tool and web application for commercial real estate
 - `docs/system-guide.md` — Detailed reference for parsing, validation checks, versioning, geocoding, property/party registries, GeoWarehouse integration, and the full API. Note: some sections describe the legacy extract pipeline; the canonical address path is now normalize → expand (see below).
 - `docs/cleanup-checklist.md` — Completed pre-geocode gate checklist (March 1, 2026). All items done. Kept for reference.
 
+## Frontend Styling
+
+- `frontend/STYLING.md` — **Read this before writing any frontend component.** Defines the complete design system: typography weights (400/500 only, never 700), color tokens (Radix --gray-N, never hardcoded hex), card patterns, spacing scale, and how to change the accent color. All rules are mandatory — no ad-hoc styles.
+
 ## Strategy Documents
 
 - `docs/pipeline-with-parcelled.md` — **The authoritative pipeline reference.** Mermaid flowcharts showing all four data sources (Realtrack, Brands, GeoWarehouse, OSM POIs), the full 8-stage pipeline (Parse → Normalize → Expand → Geocode → Parcelled → Compile), resolution priority chain, source ID schemes, and compiled record assembly. Read this first to understand the system architecture.
@@ -135,7 +139,7 @@ Cleo Mini V3 is a Python CLI tool and web application for commercial real estate
 - `cleo/web/operators.py` — FastAPI router at `/api/operators/*` for operator management
 
 ### Web app & frontend
-- `cleo/web/app.py` — FastAPI app with ~85 API endpoints (review UI + front-facing app + CRM + operators + outreach + parcels)
+- `cleo/web/app.py` — FastAPI app with ~95 API endpoints (review UI + front-facing app + CRM + operators + outreach + parcels)
 - `cleo/web/static/review_shared.css` — Shared CSS for all stage review pages
 - `cleo/web/static/review_shared.js` — Shared JS framework (navigation, review panel, regression bar, field rendering)
 - `cleo/web/static/review_landing.html` — Review landing page linking to all stage reviewers
@@ -146,7 +150,30 @@ Cleo Mini V3 is a Python CLI tool and web application for commercial real estate
 - `cleo/web/static/index.html` — Legacy combined parse+extract review (kept for backward compat)
 - `cleo/web/static/pipeline.html` — Four-column pipeline inspector (HTML | Parsed | Extracted | Geocoded)
 - `cleo/web/static/party_review.html` — Party clustering review UI
-- `frontend/src/App.tsx` — React SPA router: Dashboard, Transactions, Properties, Parties, Contacts, Brands, Map, CRM (Contacts + Deals), Outreach, Operators, Admin
+
+### Front-facing React SPA (`frontend/`)
+- `frontend/src/App.tsx` — React SPA router: Dashboard, Properties, PropertyDetail, Transactions, TransactionDetail, Map (lazy-loaded), Trace, Monitor, Admin, Showcase
+- `frontend/src/pages/PropertiesPage.tsx` — **Primary property browser.** Wired to `/api/properties/browse`. Debounced text search, City filter, Brand Category filter (10 categories from master CSV), server-side pagination (25/page), 8-column DataTable (Address, City, Owner, Sources, Txns, Tenants, Latest Price, Date). All state in URL params (deep-linkable).
+- `frontend/src/pages/PropertyDetailPage.tsx` — **Full property detail.** Wired to `/api/properties/{id}`. Current Owner card (name, contact, phones with copy), Transaction History (expandable cards with seller/buyer/consideration/site), Tenants card (brand name + category badges), Parcel card (ARN, PIN, method, confidence), Site card (SF, area, zoning), All Addresses, Source Records.
+- `frontend/src/types/index.ts` — All shared TypeScript types: PropertyBrowseItem, BrowseResponse, FiltersResponse, PropertyDetail, PropertyTransaction, PropertyTenant, PropertyContact, PropertyOwner
+- `frontend/src/api/client.ts` — `fetchApi<T>(path, params)`, `mutateApi<T>(path, method, body)`
+- `frontend/src/components/ui/` — Reusable components: DataTable (TanStack), SearchToolbar, PageHeader, Pagination, EmptyState, StatCard, SimpleLineChart, StackedBarChart, Sidebar, Header, AppLayout, MiniList
+- `frontend/src/lib/theme.ts` — Radix Theme config (accent: jade, gray: slate)
+- `frontend/src/lib/utils.ts` — cn(), formatCompact(), formatCurrency(), formatPercent()
+- `frontend/STYLING.md` — **Read before writing any component.** WorkOS design system rules.
+
+### Properties browse API (front-facing)
+- `GET /api/properties/browse` — Paginated property browsing with filtering. Params: `q` (text search via inverted index), `city`, `category` (brand category), `min_price`, `max_price`, `sort` (latest_sale_date|latest_sale_price|city|transaction_count|relevance), `order` (asc|desc), `page`, `per_page`. Returns `{results, total, page, per_page}`.
+- `GET /api/properties/filters` — Available filter values: 625 cities, 10 brand categories (Grocery, QSR, Big-Box Retail, Specialty Retail, Discount Retail, Full-Service, Take-out, Automotive, Financial Services, Fuel). Cached by properties.json mtime.
+- `GET /api/properties/{property_id}` — Full property record enriched with brand tenant names and categories. Brand metadata resolved via `_BrandInfoCache` (12,986 BR records from normalized/active, matched to master CSV categories with 13-entry alias table for name variants).
+- `GET /api/properties/search` — Text search via inverted index (310K tokens). Returns scored results.
+- `GET /api/properties/stats` — Master list metadata (total properties, sources, etc.)
+
+### Brand category system
+- Master brand CSV at `~/Library/CloudStorage/OneDrive-CanadianCommercial/00_Prospecting/Master Retail Sheet - All Brands.csv` (137 brands, 10 categories). Referenced via `MASTER_BRANDS_CSV` in config.py.
+- Brand metadata is lost at the expand stage (expand only carries address data). The web app resolves it at query time by scanning normalized/active/BR_*.json on first API call (~1.5s, cached in `_BrandInfoCache`).
+- 13 brand name aliases handle mismatches between scraped names and CSV names (e.g. "McDonald's" → "mcdonalds", "No Frills" → "nofrills").
+- 88/88 scraped brand names matched to categories. All 10 categories appear in the filters dropdown.
 
 ## Data Layout
 

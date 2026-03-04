@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Parcelled Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  .review-body { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
+  .field-changed { background: #fffef5; border-left: 3px solid #ffd43b; padding-left: 7px; }
+
+  .method-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .method-arn_direct { background: #dcfce7; color: #166534; }
+  .method-pin_bridge { background: #dbeafe; color: #1e40af; }
+  .method-spatial { background: #fef3c7; color: #92400e; }
+  .method-none { background: #fee2e2; color: #991b1b; }
+
+  .confidence-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 600;
+  }
+  .confidence-high { background: #dcfce7; color: #166534; }
+  .confidence-medium { background: #dbeafe; color: #1e40af; }
+  .confidence-low { background: #fef3c7; color: #92400e; }
+
+  .coords-link {
+    color: #2563eb; text-decoration: underline; cursor: pointer;
+    font-size: 12px;
+  }
+  .coords-link:hover { color: #1d4ed8; }
+
+  .arn-mono { font-family: monospace; font-size: 12px; letter-spacing: 0.5px; }
+  .pin-mono { font-family: monospace; font-size: 12px; }
+
+  .parcel-attrs { font-size: 12px; color: #666; margin-top: 4px; }
+  .parcel-attrs .attr-row { display: flex; gap: 8px; margin-top: 2px; }
+  .parcel-attrs .attr-label { font-weight: 600; min-width: 80px; color: #888; }
+
+  .chain-step { font-size: 11px; color: #888; }
+  .chain-step.hit { color: #166534; font-weight: 600; }
+  .chain-step.miss { color: #991b1b; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Parcelled Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse">Parse</a>
+  <a href="/review/normalize">Normalize</a>
+  <a href="/review/expand">Expand</a>
+  <a href="/review/parcelled" class="active">Parcelled</a>
+  <a href="/review/compiled">Compiled</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">REGRESSION — Sandbox parcelled differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="reg-reject">Reject Sandbox</button>
+</div>
+
+<div class="columns">
+  <!-- Pane 1: Expanded source (input identifiers & addresses) -->
+  <div class="column" id="col-left">
+    <div class="col-header"><span>Input (Expanded + Identifiers)</span></div>
+    <div class="empty-state" id="left-empty">Select a record</div>
+    <div class="parsed-data" id="pane-left" style="display:none;"></div>
+  </div>
+  <!-- Pane 2: Active parcelled -->
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active Parcelled</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select a record</div>
+    <div class="norm-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <!-- Pane 3: Sandbox parcelled -->
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox Parcelled</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select a record</div>
+    <div class="norm-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about parcel resolution quality..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div>
+      <div class="review-pane-title">Overrides</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Notes only (no field overrides for parcelled)</label></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── State ──
+let expandedData = null;
+let parcelledActive = null;
+let parcelledSandbox = null;
+let hasParcelledSandbox = false;
+
+// ── Helpers ──
+function methodBadge(method) {
+  const cls = 'method-' + (method || 'none');
+  return `<span class="method-badge ${cls}">${escHtml(method || 'none')}</span>`;
+}
+
+function confidenceBadge(confidence) {
+  if (!confidence) return '<span class="confidence-badge method-none">none</span>';
+  const cls = 'confidence-' + confidence;
+  return `<span class="confidence-badge ${cls}">${escHtml(confidence)}</span>`;
+}
+
+function coordsLink(lat, lng) {
+  if (!lat || !lng) return 'none';
+  const url = `https://www.google.com/maps?q=${lat},${lng}`;
+  return `<a class="coords-link" href="${url}" target="_blank" rel="noopener">${lat.toFixed(6)}, ${lng.toFixed(6)}</a>`;
+}
+
+function arnDisplay(arn) {
+  if (!arn) return 'none';
+  return `<span class="arn-mono">${escHtml(arn)}</span>`;
+}
+
+function pinDisplay(pin) {
+  if (!pin) return '';
+  return `<span class="pin-mono">${escHtml(pin)}</span>`;
+}
+
+function chainDisplay(chain) {
+  if (!chain || !chain.length) return '';
+  return chain.map(step => {
+    const isMiss = step.endsWith('_miss');
+    const isNone = step === 'none';
+    const cls = isMiss ? 'miss' : (isNone ? 'miss' : 'hit');
+    return `<span class="chain-step ${cls}">${escHtml(step)}</span>`;
+  }).join(' &rarr; ');
+}
+
+// ── Render input data (pane 1) ──
+function renderInput(container, expanded, parcelled) {
+  if (!parcelled) { container.innerHTML = ''; return; }
+
+  let html = '';
+  const ident = parcelled.input_identifiers || {};
+
+  // Source info
+  html += section('Record', [
+    field('ID', parcelled.id),
+    field('Source', parcelled.source),
+  ]);
+
+  // Input identifiers
+  const identFields = [];
+  if (ident.arn_raw) identFields.push(field('ARN (raw)', arnDisplay(ident.arn_raw)));
+  if (ident.arn_20) identFields.push(field('ARN (20-digit)', arnDisplay(ident.arn_20)));
+  if (ident.pins && ident.pins.length) {
+    identFields.push(field('PINs', ident.pins.map(p => pinDisplay(p)).join(', ')));
+  }
+  if (ident.coords) {
+    identFields.push(field('Coords', coordsLink(ident.coords.lat, ident.coords.lng)));
+    identFields.push(field('Provider', ident.coords.provider || 'unknown'));
+  } else {
+    identFields.push(field('Coords', 'none'));
+  }
+  if (identFields.length) html += section('Input Identifiers', identFields);
+
+  // Expanded addresses (from expanded data)
+  if (expanded) {
+    for (const [role, label] of [['property', 'Property'], ['property_alt', 'Alt Properties'], ['seller', 'Seller'], ['buyer', 'Buyer']]) {
+      const block = expanded[role];
+      if (!block) continue;
+
+      if (role === 'property_alt' && Array.isArray(block)) {
+        for (let i = 0; i < block.length; i++) {
+          const altBlock = block[i];
+          if (!altBlock || !altBlock.addresses) continue;
+          const addrs = altBlock.addresses.map(a => field('', a.canonical + (a.skip_geocode ? ' [skip]' : '')));
+          html += section(`Alt ${i+1}`, addrs);
+        }
+        continue;
+      }
+
+      if (block.addresses) {
+        const addrs = block.addresses.map(a => field('', a.canonical + (a.skip_geocode ? ' [skip]' : '')));
+        html += section(label + ' Addresses', addrs);
+      }
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+// ── Render parcelled data (pane 2/3) ──
+function renderParcelled(container, data, compareData) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+  const res = data.resolution || {};
+  const cmpRes = compareData?.resolution || {};
+  const parcel = data.parcel;
+  const cmpParcel = compareData?.parcel;
+
+  // Resolution
+  const resFields = [
+    field('Method', methodBadge(res.method)),
+    field('Confidence', confidenceBadge(res.confidence)),
+    field('Chain', chainDisplay(res.method_chain)),
+  ];
+  if (res.resolved_arn) {
+    const changed = cmpRes.resolved_arn && res.resolved_arn !== cmpRes.resolved_arn;
+    resFields.push(field('Resolved ARN', arnDisplay(res.resolved_arn), changed));
+  }
+  if (res.pin) {
+    resFields.push(field('Resolved PIN', pinDisplay(res.pin)));
+  }
+  html += section('Resolution', resFields);
+
+  // Parcel data
+  if (parcel) {
+    const pFields = [
+      field('ARN', arnDisplay(parcel.arn)),
+    ];
+    if (parcel.pin) pFields.push(field('PIN', pinDisplay(parcel.pin)));
+
+    if (parcel.centroid) {
+      // centroid is [lat, lng] array
+      const cLat = Array.isArray(parcel.centroid) ? parcel.centroid[0] : parcel.centroid.lat;
+      const cLng = Array.isArray(parcel.centroid) ? parcel.centroid[1] : parcel.centroid.lng;
+      pFields.push(field('Centroid', coordsLink(cLat, cLng)));
+    }
+
+    if (parcel.source) pFields.push(field('Cache Source', parcel.source));
+
+    // Geometry summary
+    if (parcel.geometry) {
+      const geom = parcel.geometry;
+      if (geom.type) {
+        const coordCount = geom.coordinates
+          ? (geom.type === 'Polygon' ? geom.coordinates[0]?.length : '?')
+          : '?';
+        pFields.push(field('Geometry', `${geom.type} (${coordCount} vertices)`));
+      }
+    } else {
+      pFields.push(field('Geometry', 'none'));
+    }
+
+    html += section('Parcel', pFields);
+
+    // Parcel attributes
+    const attrs = parcel.attributes || {};
+    if (Object.keys(attrs).length > 0) {
+      const attrFields = [];
+      const interestingKeys = [
+        'MUNICIPALITY', 'MUNICIPAL_NAME', 'MunicipalityName',
+        'PROPERTY_TYPE', 'PropertyType',
+        'ASSESSMENT_CODE', 'AssessmentCode',
+        'DESCRIPTION', 'PropertyDescription',
+        'Shape__Area', 'SHAPE.AREA', 'Shape_Area',
+      ];
+      // Show interesting keys first
+      for (const key of interestingKeys) {
+        if (attrs[key] !== undefined && attrs[key] !== null && attrs[key] !== '') {
+          attrFields.push(field(key, String(attrs[key])));
+        }
+      }
+      // Then show remaining (up to 10 more)
+      let remaining = 0;
+      for (const [k, v] of Object.entries(attrs)) {
+        if (interestingKeys.includes(k)) continue;
+        if (v === null || v === '' || v === undefined) continue;
+        if (remaining < 10) {
+          attrFields.push(field(k, String(v)));
+        }
+        remaining++;
+      }
+      if (remaining > 10) {
+        attrFields.push(field('...', `${remaining - 10} more attributes`));
+      }
+      if (attrFields.length) html += section('Attributes', attrFields);
+    }
+  } else {
+    html += section('Parcel', [field('Status', 'UNRESOLVED — no parcel matched')]);
+  }
+
+  // Input coords for quick verification (show Google Maps link)
+  const ident = data.input_identifiers || {};
+  if (ident.coords) {
+    html += section('Quick Check', [
+      field('Input Coords', coordsLink(ident.coords.lat, ident.coords.lng)),
+      ...(parcel && parcel.centroid
+        ? [field('Parcel Centroid', coordsLink(
+            Array.isArray(parcel.centroid) ? parcel.centroid[0] : parcel.centroid.lat,
+            Array.isArray(parcel.centroid) ? parcel.centroid[1] : parcel.centroid.lng
+          ))]
+        : []),
+    ]);
+  }
+
+  container.innerHTML = html;
+}
+
+// Field helper with optional changed highlighting
+function field(label, value, changed) {
+  if (value === undefined || value === null) value = '';
+  const cls = changed ? ' field-changed' : '';
+  if (!label) return `<div class="field${cls}"><div class="field-value">${value}</div></div>`;
+  return `<div class="field${cls}"><span class="field-label">${escHtml(label)}</span><span class="field-value">${value}</span></div>`;
+}
+
+function section(title, fields) {
+  return `<div class="section"><div class="section-title">${escHtml(title)}</div>${fields.join('')}</div>`;
+}
+
+// ── Filters ──
+function parcelledBuildFilters() {
+  const records = review ? review.getAllRecords() : [];
+  const dets = [
+    { value: 'clean', label: 'Clean' },
+    { value: 'resolver_issue', label: 'Resolver Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream' },
+    { value: 'ambiguous', label: 'Ambiguous' },
+  ];
+  const methods = ['arn_direct', 'pin_bridge', 'spatial', 'none'];
+  const sources = [
+    { value: 'src_realtrack', label: 'Realtrack', key: 'realtrack' },
+    { value: 'src_brand', label: 'Brands', key: 'brand' },
+    { value: 'src_geowarehouse', label: 'GeoWarehouse', key: 'geowarehouse' },
+  ];
+
+  const filters = [
+    { value: 'all', label: 'All records', fn: () => true },
+    { value: 'reviewed', label: 'Reviewed', fn: r => r.reviewed, count: records.filter(r => r.reviewed).length },
+    { value: 'unreviewed', label: 'Unreviewed', fn: r => !r.reviewed, count: records.filter(r => !r.reviewed).length },
+    { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+  ];
+
+  // Method filters
+  for (const m of methods) {
+    const cnt = records.filter(r => r.method === m).length;
+    if (cnt > 0) filters.push({ value: 'method_' + m, label: 'Method: ' + m, fn: r => r.method === m, count: cnt });
+  }
+
+  // Source filters
+  for (const s of sources) {
+    const cnt = records.filter(r => r.source === s.key).length;
+    if (cnt > 0) filters.push({ value: s.value, label: s.label, fn: r => r.source === s.key, count: cnt });
+  }
+
+  // Determination filters
+  for (const d of dets) {
+    const cnt = records.filter(r => r.determination === d.value).length;
+    if (cnt > 0) filters.push({ value: d.value, label: d.label, fn: r => r.determination === d.value, count: cnt });
+  }
+
+  return filters;
+}
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'parcelled',
+  recordsUrl: '/api/parcelled-rt-ids',
+  statusUrl: '/api/parcelled-status',
+  regressionsUrl: '/api/parcelled-regressions',
+  reviewUrl: '/api/parcelled-review',
+  rejectDetermination: 'resolver_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'resolver_issue', label: 'Resolver Issue' },
+    { value: 'bad_upstream', label: 'Bad Upstream (geocode/expand)' },
+    { value: 'ambiguous', label: 'Ambiguous Match' },
+  ],
+
+  getStatusText(status) {
+    hasParcelledSandbox = status.has_sandbox || false;
+    document.getElementById('active-version').textContent = status.active_version || 'not built';
+    document.getElementById('sandbox-version').textContent = hasParcelledSandbox ? 'sandbox' : '';
+    return `Parcelled: ${status.active_version || 'not built'} | Sandbox: ${hasParcelledSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    // Enrich records with method info for filtering
+    // We'll load method from a bulk endpoint
+    let methodMap = {};
+    try {
+      const res = await fetch('/api/parcelled-methods');
+      if (res.ok) methodMap = await res.json();
+    } catch {}
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+      r.method = methodMap[r.rt_id] || '';
+    }
+    return {};
+  },
+
+  buildFilters(extra) { return parcelledBuildFilters(); },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // Fetch expanded source (pane 1 context)
+    expandedData = null;
+    try {
+      const r = await fetch(`/api/expanded/${rtId}`);
+      if (r.ok) expandedData = await r.json();
+    } catch {}
+
+    // Fetch parcelled active + sandbox
+    parcelledActive = null;
+    parcelledSandbox = null;
+    try { const r = await fetch(`/api/parcelled/${rtId}`); if (r.ok) parcelledActive = await r.json(); } catch {}
+    if (hasParcelledSandbox) {
+      try { const r = await fetch(`/api/parcelled-sandbox/${rtId}`); if (r.ok) parcelledSandbox = await r.json(); } catch {}
+    }
+
+    // Pane 1: Input identifiers + expanded addresses
+    const leftEmpty = document.getElementById('left-empty');
+    const inputData = parcelledActive || parcelledSandbox;
+    if (inputData) {
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      renderInput(panes.left, expandedData, inputData);
+    } else {
+      panes.left.style.display = 'none';
+      leftEmpty.style.display = 'flex';
+      leftEmpty.textContent = 'No parcelled data';
+    }
+
+    // Pane 2: Active parcelled
+    const middleEmpty = document.getElementById('middle-empty');
+    if (parcelledActive) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      renderParcelled(panes.middle, parcelledActive);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'Not yet parcelled';
+    }
+
+    // Pane 3: Sandbox parcelled (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (parcelledSandbox) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      renderParcelled(panes.right, parcelledSandbox, parcelledActive);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasParcelledSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+  },
+
+  getOverrides() { return {}; },
+  setOverrides() {},
+  clearOverrides() {},
+});
+</script>
+</body>
+</html>

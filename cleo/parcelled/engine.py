@@ -19,6 +19,7 @@ Resolution priority per record:
 import json
 import logging
 import os
+import signal
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -29,16 +30,23 @@ from cleo.parcels.provincial import TokenExpiredError
 
 logger = logging.getLogger(__name__)
 
+# Sentinel set when SIGINT/SIGTERM received — triggers graceful shutdown
+_shutdown_requested = False
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def _fetch_fresh_token() -> str:
+class TokenRefreshFailed(Exception):
+    """Raised when all attempts to get a valid AgMaps token have failed."""
+    pass
+
+
+def _fetch_fresh_token(max_attempts: int = 3) -> str:
     """Fetch a fresh AgMaps token using headless browser automation.
 
-    Imports Playwright, opens the AgMaps viewer, accepts the disclaimer,
-    captures the token from network traffic, validates it, and saves to .env.
+    Retries up to max_attempts times with exponential backoff.
+    Raises TokenRefreshFailed if all attempts fail.
     """
-    # Import from scripts directory
     import sys
     scripts_dir = str(_PROJECT_ROOT / "scripts")
     if scripts_dir not in sys.path:
@@ -46,23 +54,37 @@ def _fetch_fresh_token() -> str:
 
     from fetch_agmaps_token import fetch_token, save_token_to_env, test_token
 
-    logger.info("Fetching fresh AgMaps token via headless browser...")
-    token = fetch_token(headed=False, timeout_ms=60_000)
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            logger.info("Fetching AgMaps token (attempt %d/%d)...", attempt, max_attempts)
+            token = fetch_token(headed=False, timeout_ms=60_000)
 
-    logger.info("Validating token...")
-    if not test_token(token):
-        logger.warning("Token validation failed — saving anyway, may need manual refresh")
+            logger.info("Validating token...")
+            if test_token(token):
+                save_token_to_env(token)
+                os.environ["AGMAPS_TOKEN"] = token
+                logger.info("Token refreshed and saved to .env")
+                return token
+            else:
+                logger.warning("Token validation failed on attempt %d", attempt)
+                last_err = RuntimeError("Token fetched but failed validation")
+        except Exception as e:
+            last_err = e
+            logger.warning("Token fetch attempt %d failed: %s", attempt, e)
 
-    save_token_to_env(token)
+        if attempt < max_attempts:
+            wait = 10 * attempt
+            logger.info("Waiting %ds before retry...", wait)
+            time.sleep(wait)
 
-    # Update the environment so the resolver picks it up
-    os.environ["AGMAPS_TOKEN"] = token
-    logger.info("Token refreshed and saved to .env")
-    return token
+    raise TokenRefreshFailed(
+        f"All {max_attempts} token fetch attempts failed. Last error: {last_err}"
+    )
 
 
 def _ensure_valid_token(skip_api: bool) -> Optional[str]:
-    """Ensure we have a valid AgMaps token. Returns the token or None if skip_api."""
+    """Ensure we have a valid AgMaps token. Returns the token or raises TokenRefreshFailed."""
     if skip_api:
         return None
 
@@ -80,13 +102,8 @@ def _ensure_valid_token(skip_api: bool) -> Optional[str]:
         except (TokenExpiredError, Exception) as e:
             logger.info("Existing token expired or invalid: %s", e)
 
-    # Need a fresh token
-    try:
-        return _fetch_fresh_token()
-    except Exception as e:
-        logger.error("Failed to fetch AgMaps token: %s", e)
-        logger.error("Run will continue in cache-only mode for API calls")
-        return None
+    # Need a fresh token — retries internally, raises TokenRefreshFailed on total failure
+    return _fetch_fresh_token()
 
 
 def _get_best_coords(
@@ -333,16 +350,30 @@ def resolve_all(
     output_dir: Path,
     source_version: str = "",
     skip_api: bool = False,
+    resume: bool = False,
+    osm_pois_dir: Optional[Path] = None,
 ) -> Dict:
     """Resolve parcels for all records from all sources.
+
+    Processes expanded records (RT, GW, Brand) and optionally OSM POI records.
+    OSM records come from osm_pois/active/ and have native coords — they skip
+    the address pipeline entirely and go straight to spatial resolution.
 
     If skip_api is False, automatically fetches/refreshes the AgMaps token
     and handles mid-run token expiry by re-fetching.
 
+    If resume is True, skips records that already have output files in
+    output_dir, allowing interrupted runs to continue.
+
     Returns summary: {total, resolved, unresolved, by_method, by_source, errors, elapsed}
     """
+    global _shutdown_requested
+    _shutdown_requested = False
+
     start = time.time()
     total = 0
+    processed = 0
+    skipped = 0
     resolved = 0
     unresolved = 0
     errors = 0
@@ -351,106 +382,244 @@ def resolve_all(
     by_source: Dict[str, int] = {}
     token_refreshes = 0
 
-    # --- Load coordinate store ---
-    logger.info("Loading coordinate store...")
-    coord_store: Dict[str, Dict] = {}
-    if coordinates_path.exists():
-        data = json.loads(coordinates_path.read_text(encoding="utf-8"))
-        coord_store = data.get("addresses", {})
-    logger.info("  %d addresses loaded", len(coord_store))
+    # --- Install signal handlers for graceful shutdown ---
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
 
-    # --- Ensure valid token (auto-fetch if needed) ---
-    token = _ensure_valid_token(skip_api)
-    if not skip_api and not token:
-        logger.warning("No valid token available — falling back to cache-only mode")
-        skip_api = True
+    def _handle_shutdown(signum, frame):
+        global _shutdown_requested
+        if _shutdown_requested:
+            # Second signal — force exit
+            logger.warning("Second interrupt — forcing exit")
+            raise SystemExit(1)
+        _shutdown_requested = True
+        sig_name = signal.Signals(signum).name
+        logger.warning("Received %s — finishing current record then saving cache and exiting cleanly...", sig_name)
 
-    # --- Initialize resolver ---
-    logger.info("Initializing parcel resolver (skip_api=%s)...", skip_api)
-    resolver = _make_resolver(skip_api, token)
-    cache_stats = resolver._cache.stats()
-    logger.info("  Cache: %d parcels (%s)", cache_stats["total"],
-                ", ".join(f"{k}: {v}" for k, v in cache_stats.get("by_source", {}).items()))
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    signal.signal(signal.SIGTERM, _handle_shutdown)
 
-    # --- Process all expanded records ---
-    expanded_files = sorted(expanded_dir.glob("*.json"))
-    for exp_path in expanded_files:
-        if exp_path.stem == "_meta":
-            continue
-        total += 1
-        record_id = exp_path.stem
+    # --- Build set of already-completed records for resume ---
+    existing_ids: set[str] = set()
+    if resume:
+        existing_ids = {
+            f.stem for f in output_dir.glob("*.json") if f.stem != "_meta"
+        }
+        if existing_ids:
+            logger.info("Resume mode: %d records already in sandbox, skipping them", len(existing_ids))
 
-        try:
-            expanded = json.loads(exp_path.read_text(encoding="utf-8"))
-            source = expanded.get("source", "unknown")
+    try:
+        # --- Load coordinate store ---
+        logger.info("Loading coordinate store...")
+        coord_store: Dict[str, Dict] = {}
+        if coordinates_path.exists():
+            data = json.loads(coordinates_path.read_text(encoding="utf-8"))
+            coord_store = data.get("addresses", {})
+        logger.info("  %d addresses loaded", len(coord_store))
 
-            # Collect all available identifiers
-            ident = _collect_identifiers(
-                record_id, source, expanded,
-                parsed_dir, gw_parsed_dir, coord_store,
-            )
+        # --- Ensure valid token (auto-fetch if needed) ---
+        # Raises TokenRefreshFailed if all attempts fail — let it propagate
+        # so the CLI retry loop can handle it.
+        token = _ensure_valid_token(skip_api)
 
-            # Resolve parcel (with token expiry handling)
+        # --- Initialize resolver ---
+        logger.info("Initializing parcel resolver (skip_api=%s)...", skip_api)
+        resolver = _make_resolver(skip_api, token)
+        cache_stats = resolver._cache.stats()
+        logger.info("  Cache: %d parcels (%s)", cache_stats["total"],
+                    ", ".join(f"{k}: {v}" for k, v in cache_stats.get("by_source", {}).items()))
+
+        # --- Process all expanded records ---
+        expanded_files = sorted(expanded_dir.glob("*.json"))
+        for exp_path in expanded_files:
+            if exp_path.stem == "_meta":
+                continue
+            total += 1
+            record_id = exp_path.stem
+
+            # Resume: skip records already processed
+            if record_id in existing_ids:
+                skipped += 1
+                continue
+
+            # Graceful shutdown: stop processing new records
+            if _shutdown_requested:
+                logger.info("Shutdown requested — stopping after %d processed records", processed)
+                break
+
             try:
-                resolution = _resolve_record(ident, resolver)
-            except TokenExpiredError:
-                # Token expired mid-run — save cache, fetch new token, rebuild resolver
-                logger.warning("Token expired at record %d. Refreshing...", total)
-                resolver.save_cache()
+                expanded = json.loads(exp_path.read_text(encoding="utf-8"))
+                source = expanded.get("source", "unknown")
+
+                # Collect all available identifiers
+                ident = _collect_identifiers(
+                    record_id, source, expanded,
+                    parsed_dir, gw_parsed_dir, coord_store,
+                )
+
+                # Resolve parcel (with token expiry handling)
                 try:
+                    resolution = _resolve_record(ident, resolver)
+                except TokenExpiredError:
+                    # Token expired mid-run — save cache, fetch new token, rebuild resolver
+                    logger.warning("Token expired at record %d/%d. Refreshing...", processed, total - skipped)
+                    resolver.save_cache()
+                    # Retries internally (3 attempts). Raises TokenRefreshFailed
+                    # if all fail — let it propagate so the CLI retry loop handles it.
                     token = _fetch_fresh_token()
                     token_refreshes += 1
                     resolver = _make_resolver(False, token)
-                    # Retry this record
-                    resolution = _resolve_record(ident, resolver)
-                except Exception as refresh_err:
-                    logger.error("Token refresh failed: %s. Continuing cache-only.", refresh_err)
-                    resolver = _make_resolver(True)
+                    # Retry this record with the new token
                     resolution = _resolve_record(ident, resolver)
 
-            # Build and write output
-            output = _build_output(
-                record_id, source, source_version, ident, resolution,
-            )
-            out_path = output_dir / f"{record_id}.json"
-            out_path.write_text(
-                json.dumps(output, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+                # Build and write output
+                output = _build_output(
+                    record_id, source, source_version, ident, resolution,
+                )
+                out_path = output_dir / f"{record_id}.json"
+                out_path.write_text(
+                    json.dumps(output, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
-            method = resolution["method"]
-            by_method[method] = by_method.get(method, 0) + 1
-            by_source[source] = by_source.get(source, 0) + 1
+                processed += 1
+                method = resolution["method"]
+                by_method[method] = by_method.get(method, 0) + 1
+                by_source[source] = by_source.get(source, 0) + 1
 
-            if method != "none":
-                resolved += 1
-            else:
-                unresolved += 1
+                if method != "none":
+                    resolved += 1
+                else:
+                    unresolved += 1
 
-        except Exception as e:
-            errors += 1
-            error_ids.append(record_id)
-            logger.error("Error resolving %s: %s", record_id, e)
+            except Exception as e:
+                errors += 1
+                error_ids.append(record_id)
+                logger.error("Error resolving %s: %s", record_id, e)
 
-        # Progress + periodic cache save
-        if total % 2000 == 0:
-            logger.info("Progress: %d records (%d resolved, %d unresolved)",
-                        total, resolved, unresolved)
+            # Progress + periodic cache save (every 500 records for safer recovery)
+            if processed % 500 == 0 and processed > 0:
+                elapsed_so_far = time.time() - start
+                rate = processed / elapsed_so_far if elapsed_so_far > 0 else 0
+                remaining = total - skipped - processed - errors
+                eta_s = remaining / rate if rate > 0 else 0
+                eta_min = eta_s / 60
+                logger.info(
+                    "Progress: %d/%d processed (%d skipped, %d resolved, %d unresolved, %d errors) "
+                    "%.1f rec/s, ~%.0f min remaining",
+                    processed, total - skipped, skipped, resolved, unresolved, errors,
+                    rate, eta_min,
+                )
+                resolver.save_cache()
+
+        # --- Process OSM POI records (if available) ---
+        if osm_pois_dir and osm_pois_dir.exists() and not _shutdown_requested:
+            osm_files = sorted(osm_pois_dir.glob("*.json"))
+            osm_count = sum(1 for f in osm_files if f.stem != "_meta")
+            if osm_count:
+                logger.info("Processing %d OSM POI records...", osm_count)
+            for osm_path in osm_files:
+                if osm_path.stem == "_meta":
+                    continue
+                total += 1
+                record_id = osm_path.stem
+
+                if record_id in existing_ids:
+                    skipped += 1
+                    continue
+
+                if _shutdown_requested:
+                    logger.info("Shutdown requested — stopping after %d processed records", processed)
+                    break
+
+                try:
+                    osm_rec = json.loads(osm_path.read_text(encoding="utf-8"))
+
+                    # OSM records have native coords, no ARN/PIN
+                    coords = osm_rec.get("coords")
+                    ident: Dict[str, Any] = {
+                        "arn_raw": "",
+                        "arn_20": "",
+                        "pins": [],
+                        "coords": coords,
+                    }
+
+                    try:
+                        resolution = _resolve_record(ident, resolver)
+                    except TokenExpiredError:
+                        logger.warning("Token expired at OSM record %s. Refreshing...", record_id)
+                        resolver.save_cache()
+                        token = _fetch_fresh_token()
+                        token_refreshes += 1
+                        resolver = _make_resolver(False, token)
+                        resolution = _resolve_record(ident, resolver)
+
+                    output = _build_output(
+                        record_id, "osm", source_version, ident, resolution,
+                    )
+                    out_path = output_dir / f"{record_id}.json"
+                    out_path.write_text(
+                        json.dumps(output, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+
+                    processed += 1
+                    method = resolution["method"]
+                    by_method[method] = by_method.get(method, 0) + 1
+                    by_source["osm"] = by_source.get("osm", 0) + 1
+
+                    if method != "none":
+                        resolved += 1
+                    else:
+                        unresolved += 1
+
+                except Exception as e:
+                    errors += 1
+                    error_ids.append(record_id)
+                    logger.error("Error resolving OSM %s: %s", record_id, e)
+
+                if processed % 500 == 0 and processed > 0:
+                    elapsed_so_far = time.time() - start
+                    rate = processed / elapsed_so_far if elapsed_so_far > 0 else 0
+                    remaining = total - skipped - processed - errors
+                    eta_s = remaining / rate if rate > 0 else 0
+                    logger.info(
+                        "Progress: %d/%d processed (%d skipped, %d resolved, %d unresolved, %d errors) "
+                        "%.1f rec/s, ~%.0f min remaining",
+                        processed, total - skipped, skipped, resolved, unresolved, errors,
+                        rate, eta_s / 60,
+                    )
+                    resolver.save_cache()
+
+        # Final cache save
+        resolver.save_cache()
+
+    except Exception:
+        # On any unhandled error, save cache before re-raising
+        try:
             resolver.save_cache()
+        except Exception:
+            pass
+        raise
 
-    # Final cache save
-    resolver.save_cache()
+    finally:
+        # Restore original signal handlers
+        signal.signal(signal.SIGINT, prev_sigint)
+        signal.signal(signal.SIGTERM, prev_sigterm)
 
     elapsed = time.time() - start
     resolver_stats = resolver.get_stats()
 
+    status = "interrupted" if _shutdown_requested else "complete"
     logger.info(
-        "Done: %d resolved, %d unresolved, %d errors in %.1fs",
-        resolved, unresolved, errors, elapsed,
+        "Run %s: %d processed, %d skipped, %d resolved, %d unresolved, %d errors in %.1fs",
+        status, processed, skipped, resolved, unresolved, errors, elapsed,
     )
 
     return {
         "total": total,
+        "processed": processed,
+        "skipped": skipped,
         "resolved": resolved,
         "unresolved": unresolved,
         "errors": errors,
@@ -460,4 +629,5 @@ def resolve_all(
         "elapsed": elapsed,
         "token_refreshes": token_refreshes,
         "resolver_stats": resolver_stats,
+        "interrupted": _shutdown_requested,
     }

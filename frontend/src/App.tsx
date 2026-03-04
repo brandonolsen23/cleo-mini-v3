@@ -1,45 +1,52 @@
-import { Component, lazy, Suspense } from "react";
-import type { ErrorInfo, ReactNode } from "react";
+import { lazy, Suspense, Component, type ReactNode } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import AppLayout from "./components/layout/AppLayout";
-import TransactionsPage from "./components/transactions/TransactionsPage";
-import TransactionDetailPage from "./components/transactions/TransactionDetailPage";
-import DashboardPage from "./components/dashboard/DashboardPage";
-import AdminPage from "./components/admin/AdminPage";
-import MonitorPage from "./components/monitor/MonitorPage";
-import TracePage from "./components/trace/TracePage";
-import ParcelsPage from "./components/parcels/ParcelsPage";
-import ParcelDetailPage from "./components/parcels/ParcelDetailPage";
+import { Spinner, Text } from "@radix-ui/themes";
+import { AppLayout } from "./components/ui/AppLayout";
 
-const MapPage = lazy(() => import("./components/map/MapPage"));
+// Pages
+import { DashboardPage } from "./pages/DashboardPage";
+import { PropertiesPage } from "./pages/PropertiesPage";
+import { PropertyDetailPage } from "./pages/PropertyDetailPage";
+import { TransactionsPage } from "./pages/TransactionsPage";
+import { TransactionDetailPage } from "./pages/TransactionDetailPage";
+import { TracePage } from "./pages/TracePage";
+import { MonitorPage } from "./pages/MonitorPage";
+import { AdminPage } from "./pages/AdminPage";
+import { ShowcasePage } from "./pages/ShowcasePage";
+import { OwnersPage } from "./pages/OwnersPage";
+import { EntityDetailPage } from "./pages/OwnerDetailPage";
+
+const MapPage = lazy(() =>
+  import("./pages/MapPage").then((m) => ({ default: m.MapPage }))
+);
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
-  { hasError: boolean; error: Error | null }
+  { error: Error | null }
 > {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
+  state = { error: null as Error | null };
 
   static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("Unhandled error:", error, info.componentStack);
+    return { error };
   }
 
   render() {
-    if (this.state.hasError) {
+    if (this.state.error) {
       return (
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="max-w-md text-center">
-            <h2 className="text-lg font-semibold text-red-600 mb-2">Something went wrong</h2>
-            <p className="text-sm text-gray-600 mb-4">{this.state.error?.message}</p>
+        <div className="flex h-screen items-center justify-center">
+          <div className="text-center">
+            <Text size="4" weight="medium" className="block">
+              Something went wrong
+            </Text>
+            <Text size="2" color="gray" className="mt-2 block">
+              {this.state.error.message}
+            </Text>
             <button
-              className="px-4 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded"
-              onClick={() => window.location.reload()}
+              className="mt-4 text-sm font-medium text-[var(--accent-11)] hover:underline"
+              onClick={() => {
+                this.setState({ error: null });
+                window.location.reload();
+              }}
             >
               Reload page
             </button>
@@ -58,16 +65,33 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
-          <Route path="parcels" element={<ParcelsPage />} />
-          <Route path="parcels/:arn" element={<ParcelDetailPage />} />
+          <Route path="properties" element={<PropertiesPage />} />
+          <Route path="properties/:id" element={<PropertyDetailPage />} />
+          <Route path="owners" element={<OwnersPage />} />
+          <Route path="owners/:id" element={<EntityDetailPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
-          <Route path="transactions/:rtId" element={<TransactionDetailPage />} />
-          {/* Legacy property URLs redirect to parcels */}
-          <Route path="properties/:propId" element={<Navigate to="/parcels" replace />} />
+          <Route
+            path="transactions/:rtId"
+            element={<TransactionDetailPage />}
+          />
           <Route path="trace" element={<TracePage />} />
           <Route path="monitor" element={<MonitorPage />} />
+          <Route
+            path="map"
+            element={
+              <Suspense
+                fallback={
+                  <div className="flex h-96 items-center justify-center">
+                    <Spinner size="3" />
+                  </div>
+                }
+              >
+                <MapPage />
+              </Suspense>
+            }
+          />
           <Route path="admin" element={<AdminPage />} />
-          <Route path="map" element={<Suspense fallback={<div className="flex-1 flex items-center justify-center"><p className="text-sm text-gray-500">Loading map...</p></div>}><MapPage /></Suspense>} />
+          <Route path="showcase" element={<ShowcasePage />} />
         </Route>
       </Routes>
     </ErrorBoundary>

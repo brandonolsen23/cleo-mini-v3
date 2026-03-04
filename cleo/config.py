@@ -28,6 +28,9 @@ EXPAND_REVIEWS_PATH = DATA_DIR / "expand_reviews.json"
 PARCELLED_DIR = DATA_DIR / "parcelled"
 PARCELLED_REVIEWS_PATH = DATA_DIR / "parcelled_reviews.json"
 
+# OSM POIs (snapshot source records for parcelled stage)
+OSM_POIS_DIR = DATA_DIR / "osm_pois"
+
 # Compiled (all sources reassembled per record)
 COMPILED_DIR = DATA_DIR / "compiled"
 COMPILED_REVIEWS_PATH = DATA_DIR / "compiled_reviews.json"
@@ -38,6 +41,8 @@ GEO_REVIEWS_PATH = DATA_DIR / "geo_reviews.json"
 
 # Properties
 PROPERTIES_PATH = DATA_DIR / "properties.json"
+PROPERTIES_UNRESOLVED_PATH = DATA_DIR / "properties_unresolved.json"
+SEARCH_INDEX_PATH = DATA_DIR / "search_index.json"
 PROPERTY_EDITS_PATH = DATA_DIR / "property_edits.jsonl"
 
 # Markets (static population reference)
@@ -47,6 +52,13 @@ MARKETS_PATH = DATA_DIR / "markets.json"
 PARTIES_PATH = DATA_DIR / "parties.json"
 PARTY_EDITS_PATH = DATA_DIR / "party_edits.jsonl"
 KEYWORDS_PATH = DATA_DIR / "brand_keywords.json"
+
+# Owners
+OWNER_LINKS_PATH = DATA_DIR / "owner_links.json"
+OWNER_LINK_LOG_PATH = DATA_DIR / "owner_link_log.jsonl"
+
+# Data issues (user-flagged from UI)
+DATA_ISSUES_PATH = DATA_DIR / "data_issues.json"
 
 # Brands
 NORMALIZE_SKIP_BRANDS = {
@@ -146,6 +158,7 @@ NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
 EXPANDED_DIR.mkdir(parents=True, exist_ok=True)
 GEOCODED_DIR.mkdir(parents=True, exist_ok=True)
 PARCELLED_DIR.mkdir(parents=True, exist_ok=True)
+OSM_POIS_DIR.mkdir(parents=True, exist_ok=True)
 COMPILED_DIR.mkdir(parents=True, exist_ok=True)
 METRICS_DIR.mkdir(parents=True, exist_ok=True)
 

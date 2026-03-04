@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cleo — Compiled Review</title>
+<link rel="stylesheet" href="/review/shared.css">
+<style>
+  .method-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .method-arn_direct { background: #dcfce7; color: #166534; }
+  .method-pin_bridge { background: #dbeafe; color: #1e40af; }
+  .method-spatial { background: #fef3c7; color: #92400e; }
+  .method-none { background: #fee2e2; color: #991b1b; }
+
+  .confidence-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 600;
+  }
+  .confidence-high { background: #dcfce7; color: #166534; }
+  .confidence-medium { background: #dbeafe; color: #1e40af; }
+  .confidence-low { background: #fef3c7; color: #92400e; }
+
+  .source-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .source-realtrack { background: #dbeafe; color: #1e40af; }
+  .source-brand { background: #f3e8ff; color: #6b21a8; }
+  .source-geowarehouse { background: #fef3c7; color: #92400e; }
+  .source-osm { background: #dcfce7; color: #166534; }
+
+  .coords-link {
+    color: #2563eb; text-decoration: underline; cursor: pointer; font-size: 12px;
+  }
+  .coords-link:hover { color: #1d4ed8; }
+  .arn-mono { font-family: monospace; font-size: 12px; letter-spacing: 0.5px; }
+  .pin-mono { font-family: monospace; font-size: 12px; }
+  .price-value { font-weight: 600; color: #166534; }
+  .field-changed { background: #fffef5; border-left: 3px solid #ffd43b; padding-left: 7px; }
+  .addr-list { margin: 0; padding: 0; list-style: none; }
+  .addr-item { padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
+  .addr-canonical { font-weight: 500; }
+  .addr-geo { font-size: 11px; color: #888; margin-left: 8px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Compiled Review</h1>
+  <label>Filter:</label>
+  <select id="filter-select"></select>
+  <input type="text" id="search-input" placeholder="Search ID..." style="width:130px;">
+  <select id="record-select" style="width:170px;"></select>
+  <button class="nav-btn" id="prev-btn" disabled>&larr;</button>
+  <button class="nav-btn" id="next-btn" disabled>&rarr;</button>
+  <span class="counter" id="counter"></span>
+  <span class="status" id="status-info"></span>
+</div>
+
+<nav class="stage-nav">
+  <a href="/review" class="home-link">Review</a>
+  <span class="sep">|</span>
+  <a href="/review/parse">Parse</a>
+  <a href="/review/normalize">Normalize</a>
+  <a href="/review/expand">Expand</a>
+  <a href="/review/parcelled">Parcelled</a>
+  <a href="/review/compiled" class="active">Compiled</a>
+  <span class="sep">|</span>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/party-review">Parties</a>
+</nav>
+
+<div class="regression-bar" id="regression-bar">
+  <span class="bar-label" id="reg-bar-label">REGRESSION — Sandbox compiled differs from reviewed active</span>
+  <span class="bar-status" id="reg-bar-status"></span>
+  <button class="approve-btn" id="reg-approve">Approve Sandbox</button>
+  <button class="reject-btn" id="reg-reject">Reject Sandbox</button>
+</div>
+
+<div class="columns">
+  <!-- Pane 1: Upstream data (parcelled + expanded inputs) -->
+  <div class="column" id="col-left">
+    <div class="col-header"><span>Upstream Inputs</span></div>
+    <div class="empty-state" id="left-empty">Select a record</div>
+    <div class="parsed-data" id="pane-left" style="display:none;"></div>
+  </div>
+  <!-- Pane 2: Active compiled -->
+  <div class="column" id="col-middle">
+    <div class="col-header">
+      <span>Active Compiled</span>
+      <span class="version-tag" id="active-version"></span>
+    </div>
+    <div class="empty-state" id="middle-empty">Select a record</div>
+    <div class="parsed-data" id="pane-middle" style="display:none;"></div>
+  </div>
+  <!-- Pane 3: Sandbox compiled -->
+  <div class="column" id="col-right">
+    <div class="col-header">
+      <span>Sandbox Compiled</span>
+      <span class="version-tag" id="sandbox-version"></span>
+    </div>
+    <div class="empty-state" id="right-empty">Select a record</div>
+    <div class="parsed-data" id="pane-right" style="display:none;"></div>
+  </div>
+</div>
+
+<div class="review-panel collapsed" id="review-panel">
+  <div class="review-toggle" id="review-toggle">
+    <h2>Review Panel</h2>
+    <span class="save-indicator hidden" id="save-indicator"></span>
+    <span class="toggle-arrow" id="toggle-arrow">&#9650;</span>
+  </div>
+  <div class="review-body" id="review-body">
+    <div class="review-col">
+      <label>Determination</label>
+      <select id="review-determination"></select>
+      <label>Notes</label>
+      <textarea id="review-notes" placeholder="Notes about compiled record quality..."></textarea>
+      <div class="review-actions">
+        <button class="save-btn" id="review-save" disabled>Save</button>
+        <button class="clear-btn" id="review-clear">Clear</button>
+      </div>
+    </div>
+    <div>
+      <div class="review-pane-title">Overrides</div>
+      <div class="override-grid">
+        <div class="override-item"><label>Notes only (no field overrides for compiled)</label></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/review/shared.js"></script>
+<script>
+// ── State ──
+let compiledActive = null;
+let compiledSandbox = null;
+let hasCompiledSandbox = false;
+
+// ── Helpers ──
+function methodBadge(method) {
+  const cls = 'method-' + (method || 'none');
+  return `<span class="method-badge ${cls}">${escHtml(method || 'none')}</span>`;
+}
+
+function confidenceBadge(confidence) {
+  if (!confidence) return '';
+  const cls = 'confidence-' + confidence;
+  return `<span class="confidence-badge ${cls}">${escHtml(confidence)}</span>`;
+}
+
+function sourceBadge(source) {
+  const cls = 'source-' + (source || 'unknown');
+  return `<span class="source-badge ${cls}">${escHtml(source || 'unknown')}</span>`;
+}
+
+function coordsLink(lat, lng) {
+  if (!lat || !lng) return 'none';
+  const url = `https://www.google.com/maps?q=${lat},${lng}`;
+  return `<a class="coords-link" href="${url}" target="_blank" rel="noopener">${Number(lat).toFixed(6)}, ${Number(lng).toFixed(6)}</a>`;
+}
+
+function arnDisplay(arn) {
+  if (!arn) return 'none';
+  return `<span class="arn-mono">${escHtml(arn)}</span>`;
+}
+
+function priceDisplay(price) {
+  if (!price && price !== 0) return '';
+  return `<span class="price-value">$${Number(price).toLocaleString()}</span>`;
+}
+
+function field(label, value, changed) {
+  if (value === undefined || value === null) value = '';
+  const cls = changed ? ' field-changed' : '';
+  if (!label) return `<div class="field${cls}"><div class="field-value">${value}</div></div>`;
+  return `<div class="field${cls}"><span class="field-label">${escHtml(label)}</span><span class="field-value">${value}</span></div>`;
+}
+
+function section(title, fields) {
+  return `<div class="section"><div class="section-title">${title}</div>${fields.join('')}</div>`;
+}
+
+function stageSection(stage, title, fields) {
+  return `<div class="section"><div class="section-title"><span class="source-badge source-${stage === 'parsed' ? 'realtrack' : stage === 'expanded' ? 'brand' : stage === 'parcelled' ? 'geowarehouse' : 'osm'}" style="margin-right:6px;">${escHtml(stage)}</span>${escHtml(title)}</div>${fields.join('')}</div>`;
+}
+
+function arrayField(label, arr) {
+  if (!arr || !arr.length) return field(label, '');
+  return field(label, arr.map(v => escHtml(String(v))).join(', '));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// UPSTREAM INPUTS PANE — fetches raw data from each pipeline stage
+// ══════════════════════════════════════════════════════════════════
+
+function renderUpstream(container, { source, parsed, expanded, parcelled, osmPoi }) {
+  let html = '';
+
+  // ── RT: Parsed stage ──
+  if (source === 'realtrack' && parsed) {
+    // Transaction
+    const txn = parsed.transaction || {};
+    const addr = txn.address || {};
+    html += stageSection('parsed', 'Transaction', [
+      field('RT Number', txn.rt_number),
+      field('Sale Date', txn.sale_date),
+      field('Sale Date ISO', txn.sale_date_iso),
+      field('Sale Price', txn.sale_price),
+      field('Sale Price Raw', txn.sale_price_raw),
+      field('ARN', arnDisplay(txn.arn)),
+      arrayField('PINs', txn.pins),
+    ]);
+
+    // Transaction Address (raw parsed)
+    html += stageSection('parsed', 'Transaction Address', [
+      field('Address', addr.address),
+      field('Suite', addr.address_suite),
+      field('City', addr.city),
+      field('Municipality', addr.municipality),
+      field('Province', addr.province),
+      field('Postal Code', addr.postal_code),
+      arrayField('Alternate Addresses', addr.alternate_addresses),
+    ]);
+
+    // Transferor (Seller) — ALL fields
+    const xfer = parsed.transferor || {};
+    html += stageSection('parsed', 'Transferor (Seller)', [
+      field('Name', xfer.name),
+      field('Contact', xfer.contact),
+      field('Attention', xfer.attention),
+      field('Phone', xfer.phone),
+      field('Address', xfer.address),
+      arrayField('Alternate Names', xfer.alternate_names),
+      arrayField('Aliases', xfer.aliases),
+      arrayField('Company Lines', xfer.company_lines),
+      arrayField('Contact Lines', xfer.contact_lines),
+      arrayField('Address Lines', xfer.address_lines),
+      arrayField('Phones', xfer.phones),
+      arrayField('Officer Titles', xfer.officer_titles),
+    ]);
+
+    // Transferee (Buyer) — ALL fields
+    const xfee = parsed.transferee || {};
+    html += stageSection('parsed', 'Transferee (Buyer)', [
+      field('Name', xfee.name),
+      field('Contact', xfee.contact),
+      field('Attention', xfee.attention),
+      field('Phone', xfee.phone),
+      field('Address', xfee.address),
+      arrayField('Alternate Names', xfee.alternate_names),
+      arrayField('Aliases', xfee.aliases),
+      arrayField('Company Lines', xfee.company_lines),
+      arrayField('Contact Lines', xfee.contact_lines),
+      arrayField('Address Lines', xfee.address_lines),
+      arrayField('Phones', xfee.phones),
+      arrayField('Officer Titles', xfee.officer_titles),
+    ]);
+
+    // Site — ALL fields
+    const site = parsed.site || {};
+    html += stageSection('parsed', 'Site', [
+      field('Legal Desc', site.legal_description),
+      field('Site Area', site.site_area),
+      field('Area Units', site.site_area_units),
+      field('Frontage', site.site_frontage),
+      field('Frontage Units', site.site_frontage_units),
+      field('Depth', site.site_depth),
+      field('Depth Units', site.site_depth_units),
+      field('Zoning', site.zoning),
+      field('PINs', site.pins),
+      field('ARN', site.arn),
+    ]);
+
+    // Consideration — ALL fields
+    const consid = parsed.consideration || {};
+    html += stageSection('parsed', 'Consideration', [
+      field('Cash', consid.cash),
+      field('Assumed Debt', consid.assumed_debt),
+      field('Chattels', consid.chattels),
+      field('Verbatim', consid.verbatim),
+      arrayField('Chargees', consid.chargees),
+    ]);
+
+    // Broker
+    const broker = parsed.broker || {};
+    html += stageSection('parsed', 'Broker', [
+      field('Brokerage', broker.brokerage),
+      field('Phone', broker.phone),
+    ]);
+
+    // Export Extras
+    const extras = parsed.export_extras || {};
+    html += stageSection('parsed', 'Export Extras', [
+      field('Building SF', extras.building_sf),
+      field('Postal Code', extras.postal_code),
+    ]);
+
+    // Description
+    html += stageSection('parsed', 'Description', [
+      field('', parsed.description ? escHtml(parsed.description) : '(none)'),
+    ]);
+
+    // Photos
+    const photos = parsed.photos || [];
+    html += stageSection('parsed', `Photos (${photos.length})`, photos.length
+      ? photos.map(url => field('', `<span style="font-size:11px;word-break:break-all;">${escHtml(url)}</span>`))
+      : [field('', '(none)')]);
+  }
+
+  // ── OSM: POI snapshot ──
+  if (source === 'osm' && osmPoi) {
+    html += stageSection('osm', 'POI Snapshot', [
+      field('ID', osmPoi.id),
+      field('OSM Type', osmPoi.osm_type),
+      field('OSM Numeric ID', osmPoi.osm_numeric_id),
+      field('OSM ID Full', osmPoi.osm_id_full),
+      field('Name', osmPoi.name),
+      field('Brand', osmPoi.brand),
+      field('Tracked Brand', osmPoi.tracked_brand),
+      field('Category', osmPoi.category),
+      field('Phone', osmPoi.phone),
+      field('Website', osmPoi.website),
+    ]);
+
+    const coords = osmPoi.coords || {};
+    html += stageSection('osm', 'Native Coords', [
+      field('Location', coordsLink(coords.lat, coords.lng)),
+      field('Provider', coords.provider),
+    ]);
+
+    const addr = osmPoi.address || {};
+    html += stageSection('osm', 'Address Tags', [
+      field('House Number', addr.housenumber),
+      field('Street', addr.street),
+      field('City', addr.city),
+      field('Postal Code', addr.postal_code),
+    ]);
+  }
+
+  // ── Expanded stage (RT, GW, Brand) — addresses pre-geocode ──
+  if (expanded) {
+    const expFields = [];
+    for (const [role, label] of [['property', 'Property'], ['property_alt', 'Alt Properties'], ['seller', 'Seller'], ['buyer', 'Buyer'], ['owner_address', 'Owner']]) {
+      const block = expanded[role];
+      if (!block) continue;
+
+      if (role === 'property_alt' && Array.isArray(block)) {
+        for (let i = 0; i < block.length; i++) {
+          const altAddrs = block[i]?.addresses || [];
+          for (const a of altAddrs) {
+            expFields.push(field(`Alt ${i+1}`, `<span class="addr-canonical">${escHtml(a.canonical)}</span>${a.skip_geocode ? ' <span class="addr-geo">[skip]</span>' : ''}`));
+          }
+        }
+        continue;
+      }
+
+      const addrs = block.addresses || [];
+      for (const a of addrs) {
+        const unit = a.unit ? ` ${a.unit_type || 'Unit'} ${a.unit}` : '';
+        expFields.push(field(label, `<span class="addr-canonical">${escHtml(a.canonical)}</span>${a.skip_geocode ? ' <span class="addr-geo">[skip]</span>' : ''}`));
+      }
+    }
+    if (expFields.length) {
+      html += stageSection('expanded', `Addresses (${expanded.source_version || '?'})`, expFields);
+    }
+  }
+
+  // ── Parcelled stage (all sources) — one consolidated section ──
+  if (parcelled) {
+    const res = parcelled.resolution || {};
+    const inp = parcelled.input_identifiers || {};
+    const parcel = parcelled.parcel;
+
+    const pFields = [
+      // Resolution
+      field('Method', methodBadge(res.method)),
+      field('Confidence', confidenceBadge(res.confidence)),
+      field('Resolved ARN', arnDisplay(res.resolved_arn)),
+      field('PIN', res.pin || ''),
+    ];
+    if ((res.method_chain || []).length > 1) {
+      pFields.push(arrayField('Method Chain', res.method_chain));
+    }
+
+    // Input identifiers (what the resolver had to work with)
+    pFields.push(field('Input ARN Raw', inp.arn_raw || ''));
+    pFields.push(field('Input ARN 20', arnDisplay(inp.arn_20)));
+    if ((inp.pins || []).length) pFields.push(arrayField('Input PINs', inp.pins));
+    if (inp.coords) pFields.push(field('Input Coords', coordsLink(inp.coords.lat, inp.coords.lng) + ` <span class="addr-geo">[${inp.coords.provider || '?'}]</span>`));
+
+    // Parcel result
+    if (parcel) {
+      pFields.push(field('Parcel Source', parcel.source));
+      pFields.push(field('Centroid', Array.isArray(parcel.centroid)
+        ? coordsLink(parcel.centroid[0], parcel.centroid[1])
+        : coordsLink(parcel.centroid?.lat, parcel.centroid?.lng)));
+      pFields.push(field('Geometry', parcel.geometry ? `${parcel.geometry.type} (${(parcel.geometry.coordinates?.[0]?.length || 0)} pts)` : 'none'));
+      // Compact attributes on one line
+      const attrs = parcel.attributes || {};
+      const attrSummary = Object.entries(attrs).map(([k, v]) => `${k}: ${v}`).join(', ');
+      if (attrSummary) pFields.push(field('Attributes', `<span style="font-size:11px;">${escHtml(attrSummary)}</span>`));
+    } else {
+      pFields.push(field('Parcel', 'Not resolved'));
+    }
+
+    html += stageSection('parcelled', 'Parcel Resolution', pFields);
+  }
+
+  if (!html) {
+    html = '<div class="section"><div class="section-title">No upstream data available</div></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// COMPILED RECORD PANE — shows the final assembled output
+// ══════════════════════════════════════════════════════════════
+
+function renderParty(label, party) {
+  if (!party) return '';
+  const fields = [
+    field('Name', party.name),
+    field('Contact', party.contact),
+    field('Attention', party.attention),
+    field('Phone', party.phone),
+  ];
+  const altNames = party.alternate_names || [];
+  if (altNames.length) fields.push(field('Alt Names', altNames.join('; ')));
+  const aliases = party.aliases || [];
+  if (aliases.length) fields.push(field('Aliases', aliases.join('; ')));
+  const companyLines = party.company_lines || [];
+  if (companyLines.length) fields.push(field('Company Lines', companyLines.join('; ')));
+  const phones = party.phones || [];
+  if (phones.length) fields.push(field('Phones', phones.join(', ')));
+  return section(label, fields);
+}
+
+function renderAddressList(addrList) {
+  const addrFields = [];
+  for (const a of addrList) {
+    const canonical = a.canonical || '(no canonical)';
+    const decomp = [a.street_number, a.street_name, a.street_suffix, a.street_direction].filter(Boolean).join(' ');
+    const unit = a.unit ? ` ${a.unit_type || 'Unit'} ${a.unit}` : '';
+    let geo = '';
+    if (a.lat && a.lng) {
+      geo = `${coordsLink(a.lat, a.lng)} <span class="addr-geo">[${a.geocode_provider || '?'}, ${a.geocode_accuracy || '?'}${a.geocode_confidence ? ', ' + a.geocode_confidence : ''}]</span>`;
+    } else {
+      geo = '<span class="addr-geo">not geocoded</span>';
+    }
+    addrFields.push(field('', `<span class="addr-canonical">${escHtml(canonical)}</span>${unit ? '<br><span class="addr-geo">Decomp: ' + escHtml(decomp + unit) + '</span>' : ''}<br>${geo}`));
+  }
+  return addrFields;
+}
+
+function renderCompiled(container, data, compareData) {
+  if (!data) { container.innerHTML = ''; return; }
+
+  let html = '';
+  const source = data.source || 'unknown';
+
+  // Header with source versions
+  const sv = data.source_versions || {};
+  const svParts = Object.entries(sv).map(([k, v]) => `${k}: ${v}`).join(', ');
+  html += section('Record', [
+    field('ID', data.id),
+    field('Source', sourceBadge(source)),
+    field('Source Versions', svParts),
+  ]);
+
+  // === RT-specific: Transaction ===
+  if (source === 'realtrack') {
+    const txn = data.transaction || {};
+    html += section('Transaction', [
+      field('Sale Date', txn.sale_date),
+      field('Sale Price', txn.sale_price != null ? priceDisplay(txn.sale_price) : ''),
+      field('Sale Price Raw', txn.sale_price_display),
+      field('ARN', arnDisplay(txn.arn)),
+      arrayField('PINs', txn.pins),
+      field('RT Number', txn.rt_number),
+    ]);
+  }
+
+  // Addresses (from expanded + geocode) — all sources
+  const addresses = data.addresses || {};
+  for (const [role, label] of [['property', 'Property Address'], ['property_alt', 'Alt Addresses'], ['seller', 'Seller Address'], ['buyer', 'Buyer Address'], ['owner_address', 'Owner Address']]) {
+    const addrList = addresses[role];
+    if (!addrList || !addrList.length) continue;
+    html += section(label, renderAddressList(addrList));
+  }
+
+  // OSM native coords
+  if (source === 'osm' && data.coords) {
+    html += section('Coordinates', [
+      field('Location', coordsLink(data.coords.lat, data.coords.lng)),
+      field('Provider', data.coords.provider),
+    ]);
+  }
+
+  // Parcel (from parcelled) — all sources
+  const parcel = data.parcel;
+  const cmpParcel = compareData?.parcel;
+  if (parcel) {
+    html += section('Parcel', [
+      field('ARN', arnDisplay(parcel.arn)),
+      field('PIN', parcel.pin || ''),
+      field('Method', methodBadge(parcel.method)),
+      field('Confidence', confidenceBadge(parcel.confidence)),
+      field('Centroid', coordsLink(parcel.centroid_lat, parcel.centroid_lng)),
+      field('Source', parcel.source || ''),
+    ]);
+
+    const attrs = parcel.attributes || {};
+    const attrFields = Object.entries(attrs).map(([k, v]) => field(k, String(v)));
+    if (attrFields.length) html += section('Parcel Attributes', attrFields);
+  } else {
+    const wasNull = !cmpParcel;
+    html += section('Parcel', [
+      field('Status', wasNull ? 'No parcel' : '<span class="method-badge method-none">LOST PARCEL</span>'),
+    ]);
+  }
+
+  // === RT-specific: Consideration, Seller, Buyer, Site, Broker, Description, Photos ===
+  if (source === 'realtrack') {
+    const consid = data.consideration || {};
+    html += section('Consideration', [
+      field('Cash', consid.cash != null ? priceDisplay(consid.cash) : ''),
+      field('Assumed Debt', consid.assumed_debt != null ? priceDisplay(consid.assumed_debt) : ''),
+      field('Chattels', consid.chattels),
+      field('Verbatim', consid.verbatim),
+      arrayField('Chargees', consid.chargees),
+    ]);
+
+    html += renderParty('Seller', data.seller);
+    html += renderParty('Buyer', data.buyer);
+
+    const site = data.site || {};
+    html += section('Site', [
+      field('Legal Desc', site.legal_description),
+      field('Area', site.site_area ? `${site.site_area} ${site.site_area_units || ''}` : ''),
+      field('Frontage', site.site_frontage ? `${site.site_frontage} ${site.site_frontage_units || ''}` : ''),
+      field('Depth', site.site_depth ? `${site.site_depth} ${site.site_depth_units || ''}` : ''),
+      field('Zoning', site.zoning),
+      field('Building SF', site.building_sf ? site.building_sf.toLocaleString() : ''),
+    ]);
+
+    const broker = data.broker || {};
+    html += section('Broker', [
+      field('Brokerage', broker.brokerage),
+      field('Phone', broker.phone),
+    ]);
+
+    html += section('Description', [
+      field('', data.description ? escHtml(data.description) : '(none)'),
+    ]);
+
+    const photos = data.photos || [];
+    html += section(`Photos (${photos.length})`, photos.length
+      ? photos.map(url => field('', `<span style="font-size:11px;word-break:break-all;">${escHtml(url)}</span>`))
+      : [field('', '(none)')]);
+  }
+
+  // === OSM-specific ===
+  if (source === 'osm') {
+    html += section('OSM Info', [
+      field('Name', data.name),
+      field('Brand', data.brand),
+      field('Tracked Brand', data.tracked_brand),
+      field('Category', data.category),
+      field('OSM ID', data.osm_id_full),
+      field('Phone', data.phone),
+      field('Website', data.website),
+    ]);
+
+    const addr = data.address || {};
+    html += section('OSM Address Tags', [
+      field('House Number', addr.housenumber),
+      field('Street', addr.street),
+      field('City', addr.city),
+      field('Postal Code', addr.postal_code),
+    ]);
+  }
+
+  container.innerHTML = html;
+}
+
+// ── Filters ──
+function compiledBuildFilters() {
+  const records = review ? review.getAllRecords() : [];
+  const sources = [
+    { value: 'src_realtrack', label: 'Realtrack', key: 'realtrack' },
+    { value: 'src_brand', label: 'Brands', key: 'brand' },
+    { value: 'src_geowarehouse', label: 'GeoWarehouse', key: 'geowarehouse' },
+    { value: 'src_osm', label: 'OSM', key: 'osm' },
+  ];
+
+  const filters = [
+    { value: 'all', label: 'All records', fn: () => true },
+    { value: 'reviewed', label: 'Reviewed', fn: r => r.reviewed, count: records.filter(r => r.reviewed).length },
+    { value: 'unreviewed', label: 'Unreviewed', fn: r => !r.reviewed, count: records.filter(r => !r.reviewed).length },
+    { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
+    { value: 'has_parcel', label: 'Has parcel', fn: r => r.has_parcel, count: records.filter(r => r.has_parcel).length },
+    { value: 'no_parcel', label: 'No parcel', fn: r => !r.has_parcel, count: records.filter(r => !r.has_parcel).length },
+  ];
+
+  for (const s of sources) {
+    const cnt = records.filter(r => r.source === s.key).length;
+    if (cnt > 0) filters.push({ value: s.value, label: s.label, fn: r => r.source === s.key, count: cnt });
+  }
+
+  const methods = ['arn_direct', 'pin_bridge', 'spatial', 'none'];
+  for (const m of methods) {
+    const cnt = records.filter(r => r.parcel_method === m).length;
+    if (cnt > 0) filters.push({ value: 'method_' + m, label: 'Parcel: ' + m, fn: r => r.parcel_method === m, count: cnt });
+  }
+
+  return filters;
+}
+
+// ── Init ──
+const review = initStageReview({
+  stage: 'compiled',
+  recordsUrl: '/api/compiled-rt-ids',
+  statusUrl: '/api/compiled-status',
+  regressionsUrl: '/api/compiled-regressions',
+  reviewUrl: '/api/compiled-review',
+  rejectDetermination: 'data_issue',
+
+  determinations: [
+    { value: 'clean', label: 'Clean' },
+    { value: 'data_issue', label: 'Data Issue' },
+    { value: 'parcel_wrong', label: 'Wrong Parcel' },
+    { value: 'address_wrong', label: 'Wrong Address' },
+    { value: 'missing_data', label: 'Missing Data' },
+  ],
+
+  getStatusText(status) {
+    hasCompiledSandbox = status.has_sandbox || false;
+    document.getElementById('active-version').textContent = status.active_version || 'not built';
+    document.getElementById('sandbox-version').textContent = hasCompiledSandbox ? 'sandbox' : '';
+    return `Compiled: ${status.active_version || 'not built'} | ${status.record_count || 0} records | Sandbox: ${hasCompiledSandbox ? 'yes' : 'none'}`;
+  },
+
+  async onInit(records, status, regressionSet) {
+    let metaMap = {};
+    try {
+      const res = await fetch('/api/compiled-meta');
+      if (res.ok) metaMap = await res.json();
+    } catch {}
+    for (const r of records) {
+      r.regression = regressionSet.has(r.rt_id);
+      const meta = metaMap[r.rt_id] || {};
+      r.source = meta.source || '';
+      r.has_parcel = meta.has_parcel || false;
+      r.parcel_method = meta.parcel_method || '';
+    }
+    return {};
+  },
+
+  buildFilters(extra) { return compiledBuildFilters(); },
+
+  isRegression(rec) { return rec.regression; },
+
+  async loadRecord(rtId, panes) {
+    // 1. Fetch compiled active + sandbox
+    compiledActive = null;
+    compiledSandbox = null;
+    try { const r = await fetch(`/api/compiled/${rtId}`); if (r.ok) compiledActive = await r.json(); } catch {}
+    if (hasCompiledSandbox) {
+      try { const r = await fetch(`/api/compiled-sandbox/${rtId}`); if (r.ok) compiledSandbox = await r.json(); } catch {}
+    }
+
+    // 2. Determine source, then fetch actual upstream data in parallel
+    const source = (compiledActive || compiledSandbox)?.source || '';
+    let parsedData = null, expandedData = null, parcelledData = null, osmPoiData = null;
+
+    const fetches = [];
+    // RT: fetch parsed record (raw from parse stage)
+    if (source === 'realtrack') {
+      fetches.push(fetch(`/api/active/${rtId}`).then(r => r.ok ? r.json() : null).then(d => parsedData = d).catch(() => {}));
+    }
+    // RT, GW, Brand: fetch expanded record
+    if (['realtrack', 'geowarehouse', 'brand'].includes(source)) {
+      fetches.push(fetch(`/api/expanded/${rtId}`).then(r => r.ok ? r.json() : null).then(d => expandedData = d).catch(() => {}));
+    }
+    // All: fetch parcelled record
+    fetches.push(fetch(`/api/parcelled/${rtId}`).then(r => r.ok ? r.json() : null).then(d => parcelledData = d).catch(() => {}));
+    // OSM: fetch raw POI snapshot
+    if (source === 'osm') {
+      fetches.push(fetch(`/api/osm-poi/${rtId}`).then(r => r.ok ? r.json() : null).then(d => osmPoiData = d).catch(() => {}));
+    }
+    await Promise.all(fetches);
+
+    // Pane 1: Upstream inputs from raw stage data
+    const leftEmpty = document.getElementById('left-empty');
+    const hasUpstream = parsedData || expandedData || parcelledData || osmPoiData;
+    if (hasUpstream) {
+      panes.left.style.display = 'block';
+      leftEmpty.style.display = 'none';
+      renderUpstream(panes.left, { source, parsed: parsedData, expanded: expandedData, parcelled: parcelledData, osmPoi: osmPoiData });
+    } else {
+      panes.left.style.display = 'none';
+      leftEmpty.style.display = 'flex';
+      leftEmpty.textContent = 'No upstream data';
+    }
+
+    // Pane 2: Active compiled
+    const middleEmpty = document.getElementById('middle-empty');
+    if (compiledActive) {
+      panes.middle.style.display = 'block';
+      middleEmpty.style.display = 'none';
+      renderCompiled(panes.middle, compiledActive);
+    } else {
+      panes.middle.style.display = 'none';
+      middleEmpty.style.display = 'flex';
+      middleEmpty.textContent = 'Not yet compiled';
+    }
+
+    // Pane 3: Sandbox compiled (diff vs active)
+    const rightEmpty = document.getElementById('right-empty');
+    if (compiledSandbox) {
+      panes.right.style.display = 'block';
+      rightEmpty.style.display = 'none';
+      renderCompiled(panes.right, compiledSandbox, compiledActive);
+    } else {
+      panes.right.style.display = 'none';
+      rightEmpty.style.display = 'flex';
+      rightEmpty.textContent = hasCompiledSandbox ? 'Not in sandbox' : 'No sandbox';
+    }
+  },
+
+  getOverrides() { return {}; },
+  setOverrides() {},
+  clearOverrides() {},
+});
+</script>
+</body>
+</html>

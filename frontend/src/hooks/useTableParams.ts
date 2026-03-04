@@ -1,78 +1,40 @@
-import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
-import type { SortingState, PaginationState } from "@tanstack/react-table";
+import { useCallback, useMemo } from "react";
 
 interface TableParams {
-  globalFilter: string;
-  sorting: SortingState;
-  pagination: PaginationState;
-  setGlobalFilter: (value: string) => void;
-  setSorting: (updater: SortingState | ((prev: SortingState) => SortingState)) => void;
-  setPagination: (updater: PaginationState | ((prev: PaginationState) => PaginationState)) => void;
-  searchParams: URLSearchParams;
-  updateParams: (changes: Record<string, string | null>) => void;
+  search: string;
+  page: number;
+  sort: string;
+  order: "asc" | "desc";
 }
 
-export function useTableParams(defaultSort: SortingState = [], pageSize = 50): TableParams {
+export function useTableParams(defaults?: Partial<TableParams>) {
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const globalFilter = searchParams.get("q") || "";
+  const params: TableParams = useMemo(
+    () => ({
+      search: searchParams.get("q") ?? defaults?.search ?? "",
+      page: Number(searchParams.get("page")) || defaults?.page || 1,
+      sort: searchParams.get("sort") ?? defaults?.sort ?? "",
+      order:
+        (searchParams.get("order") as "asc" | "desc") ??
+        defaults?.order ??
+        "asc",
+    }),
+    [searchParams, defaults]
+  );
 
-  const sortParam = searchParams.get("sort");
-  const sorting: SortingState = sortParam
-    ? sortParam.split(",").map((s) => {
-        const desc = s.startsWith("-");
-        return { id: desc ? s.slice(1) : s, desc };
-      })
-    : defaultSort;
-
-  const page = parseInt(searchParams.get("page") || "1", 10) - 1;
-  const pagination: PaginationState = { pageIndex: Math.max(0, page), pageSize };
-
-  const update = useCallback(
-    (changes: Record<string, string | null>) => {
+  const setParam = useCallback(
+    (key: string, value: string) => {
       setSearchParams((prev) => {
         const next = new URLSearchParams(prev);
-        for (const [k, v] of Object.entries(changes)) {
-          if (v === null || v === "") {
-            next.delete(k);
-          } else {
-            next.set(k, v);
-          }
-        }
+        if (value) next.set(key, value);
+        else next.delete(key);
         return next;
-      }, { replace: true });
+      });
     },
     [setSearchParams]
   );
 
-  const setGlobalFilter = useCallback(
-    (value: string) => {
-      update({ q: value || null, page: null });
-    },
-    [update]
-  );
-
-  const setSorting = useCallback(
-    (updater: SortingState | ((prev: SortingState) => SortingState)) => {
-      const next = typeof updater === "function" ? updater(sorting) : updater;
-      const param = next.map((s) => (s.desc ? `-${s.id}` : s.id)).join(",");
-      update({ sort: param || null, page: null });
-    },
-    [sorting, update]
-  );
-
-  const setPagination = useCallback(
-    (updater: PaginationState | ((prev: PaginationState) => PaginationState)) => {
-      const next = typeof updater === "function" ? updater(pagination) : updater;
-      update({ page: next.pageIndex > 0 ? String(next.pageIndex + 1) : null });
-    },
-    [pagination, update]
-  );
-
-  return {
-    globalFilter, sorting, pagination,
-    setGlobalFilter, setSorting, setPagination,
-    searchParams, updateParams: update,
-  };
+  return { ...params, setParam, setSearchParams };
 }

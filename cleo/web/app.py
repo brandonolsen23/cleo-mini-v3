@@ -12,18 +12,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH, NORMALIZED_DIR, NORM_REVIEWS_PATH, EXPANDED_DIR, EXPAND_REVIEWS_PATH, PARCEL_REGISTRY_PATH
+from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH, NORMALIZED_DIR, NORM_REVIEWS_PATH, EXPANDED_DIR, EXPAND_REVIEWS_PATH, PARCEL_REGISTRY_PATH, PARCELLED_DIR, PARCELLED_REVIEWS_PATH, COMPILED_DIR, COMPILED_REVIEWS_PATH, OSM_POIS_DIR, PARCEL_CACHE_PATH
 from cleo.ingest.html_index import HtmlIndex
 from cleo.parse.versioning import active_dir, active_version, sandbox_path, sandbox_exists, list_versions, VOLATILE_FIELDS
 from cleo.extract import versioning as extract_ver
 from cleo.web.crm import router as crm_router
 from cleo.web.operators import router as operators_router
 from cleo.web.outreach import router as outreach_router
+from cleo.web.owners import router as owners_router
+from cleo.web.issues import router as issues_router
 
 app = FastAPI(title="Cleo Review")
 app.include_router(crm_router)
 app.include_router(operators_router)
 app.include_router(outreach_router)
+app.include_router(owners_router)
+app.include_router(issues_router)
 
 
 @app.on_event("startup")
@@ -47,6 +51,12 @@ REVIEWS_PATH = DATA_DIR / "reviews.json"
 
 @app.get("/", response_class=HTMLResponse)
 def index():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/review", status_code=302)
+
+
+@app.get("/legacy-review", response_class=HTMLResponse)
+def legacy_review():
     from fastapi.responses import HTMLResponse as HR
     content = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -114,6 +124,18 @@ def review_extract():
 @app.get("/review/expand", response_class=HTMLResponse)
 def review_expand():
     content = (STATIC_DIR / "review_expand.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/parcelled", response_class=HTMLResponse)
+def review_parcelled():
+    content = (STATIC_DIR / "review_parcelled.html").read_text(encoding="utf-8")
+    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/review/compiled", response_class=HTMLResponse)
+def review_compiled():
+    content = (STATIC_DIR / "review_compiled.html").read_text(encoding="utf-8")
     return HTMLResponse(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -516,6 +538,905 @@ def api_expand_sandbox_changed():
     _expand_sandbox_changed_cache["key"] = cache_key
     _expand_sandbox_changed_cache["data"] = changed
     return changed
+
+
+# ---------------------------------------------------------------------------
+# API — Parcelled endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/parcelled-status")
+def api_parcelled_status():
+    """Return parcelled stage version info."""
+    from cleo.parcelled import versioning as parcelled_ver
+    store = parcelled_ver.store
+    return {
+        "active_version": store.active_version() or "",
+        "versions": store.list_versions(),
+        "has_sandbox": store.sandbox_path().is_dir(),
+    }
+
+
+@app.get("/api/parcelled-rt-ids")
+def api_parcelled_rt_ids():
+    """List all parcelled record IDs with review status."""
+    parcelled_active = PARCELLED_DIR / "active"
+    if not parcelled_active.exists():
+        raise HTTPException(404, "No active parcelled version")
+
+    all_ids = sorted(
+        f.stem for f in parcelled_active.glob("*.json") if f.stem != "_meta"
+    )
+
+    reviews = _load_json(PARCELLED_REVIEWS_PATH)
+
+    records = []
+    for record_id in all_ids:
+        reviewed = record_id in reviews
+        if record_id.startswith("BR_"):
+            source = "brand"
+        elif record_id.startswith("GW"):
+            source = "geowarehouse"
+        else:
+            source = "realtrack"
+        records.append({
+            "rt_id": record_id,
+            "source": source,
+            "reviewed": reviewed,
+            "determination": reviews.get(record_id, {}).get("determination", ""),
+        })
+
+    return records
+
+
+@app.get("/api/parcelled-methods")
+def api_parcelled_methods():
+    """Return {record_id: method} map for all parcelled records (for filter enrichment)."""
+    parcelled_active = PARCELLED_DIR / "active"
+    if not parcelled_active.exists():
+        return {}
+
+    methods = {}
+    for f in parcelled_active.glob("*.json"):
+        if f.stem == "_meta":
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            res = data.get("resolution", {})
+            methods[f.stem] = res.get("method", "none")
+        except Exception:
+            continue
+    return methods
+
+
+@app.get("/api/parcelled/{rt_id}")
+def api_parcelled(rt_id: str):
+    """Return parcelled JSON from active version."""
+    parcelled_path = PARCELLED_DIR / "active" / f"{rt_id}.json"
+    if not parcelled_path.exists():
+        raise HTTPException(404, "Not in active parcelled version")
+    return json.loads(parcelled_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/parcelled-sandbox/{rt_id}")
+def api_parcelled_sandbox(rt_id: str):
+    """Return parcelled JSON from sandbox."""
+    parcelled_path = PARCELLED_DIR / "sandbox" / f"{rt_id}.json"
+    if not parcelled_path.exists():
+        raise HTTPException(404, "Not in parcelled sandbox")
+    return json.loads(parcelled_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/parcelled-review/{rt_id}")
+def api_parcelled_review_get(rt_id: str):
+    """Get parcelled review for a record."""
+    reviews = _load_json(PARCELLED_REVIEWS_PATH)
+    return reviews.get(rt_id, {})
+
+
+@app.post("/api/parcelled-review/{rt_id}")
+async def api_parcelled_review_post(rt_id: str, request: Request):
+    """Save parcelled review for a record."""
+    body = await request.json()
+    reviews = _load_json(PARCELLED_REVIEWS_PATH)
+    reviews[rt_id] = {
+        "determination": body.get("determination", ""),
+        "notes": body.get("notes", ""),
+        "overrides": body.get("overrides", {}),
+        "sandbox_accepted": body.get("sandbox_accepted", False),
+        "date": datetime.now().isoformat()[:10],
+    }
+    _save_json(PARCELLED_REVIEWS_PATH, reviews)
+    return {"ok": True}
+
+
+@app.get("/api/parcelled-regressions")
+def api_parcelled_regressions():
+    """Return IDs of reviewed parcelled records that changed in sandbox."""
+    from cleo.parcelled.versioning import PARCELLED_VOLATILE_FIELDS
+
+    reviews = _load_json(PARCELLED_REVIEWS_PATH)
+    parcelled_active = PARCELLED_DIR / "active"
+    parcelled_sandbox = PARCELLED_DIR / "sandbox"
+
+    if not parcelled_active.exists() or not parcelled_sandbox.exists():
+        return []
+
+    regressions = []
+    for rt_id, rev in reviews.items():
+        if rev.get("sandbox_accepted"):
+            continue
+        if rev.get("determination") != "clean":
+            continue
+        af = parcelled_active / f"{rt_id}.json"
+        sf = parcelled_sandbox / f"{rt_id}.json"
+        if not af.exists() or not sf.exists():
+            continue
+        ad = json.loads(af.read_text(encoding="utf-8"))
+        sd = json.loads(sf.read_text(encoding="utf-8"))
+        for d in (ad, sd):
+            for k in PARCELLED_VOLATILE_FIELDS:
+                d.pop(k, None)
+        if ad != sd:
+            regressions.append(rt_id)
+
+    return regressions
+
+
+# ---------------------------------------------------------------------------
+# API — Compiled review endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/compiled-status")
+def api_compiled_status():
+    """Return compiled stage version info."""
+    from cleo.compiled import versioning as compiled_ver
+    store = compiled_ver.store
+    compiled_active = COMPILED_DIR / "active"
+    record_count = sum(1 for f in compiled_active.glob("*.json") if f.stem != "_meta") if compiled_active.exists() else 0
+    return {
+        "active_version": store.active_version() or "",
+        "versions": store.list_versions(),
+        "has_sandbox": store.sandbox_path().is_dir(),
+        "record_count": record_count,
+    }
+
+
+@app.get("/api/compiled-rt-ids")
+def api_compiled_rt_ids():
+    """List all compiled record IDs with review status."""
+    compiled_active = COMPILED_DIR / "active"
+    if not compiled_active.exists():
+        raise HTTPException(404, "No active compiled version")
+
+    all_ids = sorted(
+        f.stem for f in compiled_active.glob("*.json") if f.stem != "_meta"
+    )
+
+    reviews = _load_json(COMPILED_REVIEWS_PATH)
+
+    records = []
+    for record_id in all_ids:
+        reviewed = record_id in reviews
+        det = reviews.get(record_id, {}).get("determination", "")
+        records.append({
+            "rt_id": record_id,
+            "reviewed": reviewed,
+            "determination": det,
+        })
+
+    return records
+
+
+@app.get("/api/compiled-meta")
+def api_compiled_meta():
+    """Return {record_id: {source, has_parcel, parcel_method}} for filtering."""
+    compiled_active = COMPILED_DIR / "active"
+    if not compiled_active.exists():
+        return {}
+
+    meta = {}
+    for f in compiled_active.glob("*.json"):
+        if f.stem == "_meta":
+            continue
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            parcel = data.get("parcel")
+            meta[f.stem] = {
+                "source": data.get("source", "unknown"),
+                "has_parcel": parcel is not None,
+                "parcel_method": parcel.get("method", "") if parcel else "",
+            }
+        except Exception:
+            meta[f.stem] = {"source": "unknown", "has_parcel": False, "parcel_method": ""}
+
+    return meta
+
+
+@app.get("/api/compiled/{rt_id}")
+def api_compiled_record(rt_id: str):
+    """Return compiled JSON from active version."""
+    compiled_path = COMPILED_DIR / "active" / f"{rt_id}.json"
+    if not compiled_path.exists():
+        raise HTTPException(404, "Not in active compiled version")
+    return json.loads(compiled_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/compiled-sandbox/{rt_id}")
+def api_compiled_sandbox(rt_id: str):
+    """Return compiled JSON from sandbox."""
+    compiled_path = COMPILED_DIR / "sandbox" / f"{rt_id}.json"
+    if not compiled_path.exists():
+        raise HTTPException(404, "Not in compiled sandbox")
+    return json.loads(compiled_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/compiled-review/{rt_id}")
+def api_compiled_review_get(rt_id: str):
+    """Get compiled review for a record."""
+    reviews = _load_json(COMPILED_REVIEWS_PATH)
+    return reviews.get(rt_id, {})
+
+
+@app.post("/api/compiled-review/{rt_id}")
+async def api_compiled_review_post(rt_id: str, request: Request):
+    """Save compiled review for a record."""
+    body = await request.json()
+    reviews = _load_json(COMPILED_REVIEWS_PATH)
+    reviews[rt_id] = {
+        "determination": body.get("determination", ""),
+        "notes": body.get("notes", ""),
+        "overrides": body.get("overrides", {}),
+        "sandbox_accepted": body.get("sandbox_accepted", False),
+        "date": datetime.now().isoformat()[:10],
+    }
+    _save_json(COMPILED_REVIEWS_PATH, reviews)
+    return {"ok": True}
+
+
+@app.get("/api/compiled-regressions")
+def api_compiled_regressions():
+    """Return IDs of reviewed compiled records that changed in sandbox."""
+    from cleo.compiled.versioning import COMPILED_VOLATILE_FIELDS
+
+    reviews = _load_json(COMPILED_REVIEWS_PATH)
+    compiled_active = COMPILED_DIR / "active"
+    compiled_sandbox = COMPILED_DIR / "sandbox"
+
+    if not compiled_active.exists() or not compiled_sandbox.exists():
+        return []
+
+    regressions = []
+    for rt_id, rev in reviews.items():
+        if rev.get("sandbox_accepted"):
+            continue
+        if rev.get("determination") != "clean":
+            continue
+        af = compiled_active / f"{rt_id}.json"
+        sf = compiled_sandbox / f"{rt_id}.json"
+        if not af.exists() or not sf.exists():
+            continue
+        ad = json.loads(af.read_text(encoding="utf-8"))
+        sd = json.loads(sf.read_text(encoding="utf-8"))
+        for d in (ad, sd):
+            for k in COMPILED_VOLATILE_FIELDS:
+                d.pop(k, None)
+        if ad != sd:
+            regressions.append(rt_id)
+
+    return regressions
+
+
+@app.get("/api/osm-poi/{record_id}")
+def api_osm_poi(record_id: str):
+    """Get raw OSM POI record from active snapshot."""
+    osm_active = OSM_POIS_DIR / "active"
+    if not osm_active.exists():
+        raise HTTPException(404, "No OSM POIs active version")
+    path = osm_active / f"{record_id}.json"
+    if not path.exists():
+        raise HTTPException(404, f"OSM POI not found: {record_id}")
+    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+
+
+# ---------------------------------------------------------------------------
+# Properties search API
+# ---------------------------------------------------------------------------
+
+class _PropCache:
+    data = None
+    mtime = 0
+
+class _IdxCache:
+    data = None
+    mtime = 0
+
+
+def _load_properties():
+    """Load properties.json with simple caching."""
+    from cleo.config import PROPERTIES_PATH
+    if not PROPERTIES_PATH.exists():
+        return None
+    mtime = PROPERTIES_PATH.stat().st_mtime
+    if _PropCache.mtime != mtime:
+        _PropCache.data = json.loads(PROPERTIES_PATH.read_text(encoding="utf-8"))
+        _PropCache.mtime = mtime
+    return _PropCache.data
+
+
+def _load_search_index():
+    """Load search_index.json with simple caching."""
+    from cleo.config import SEARCH_INDEX_PATH
+    if not SEARCH_INDEX_PATH.exists():
+        return None
+    mtime = SEARCH_INDEX_PATH.stat().st_mtime
+    if _IdxCache.mtime != mtime:
+        _IdxCache.data = json.loads(SEARCH_INDEX_PATH.read_text(encoding="utf-8"))
+        _IdxCache.mtime = mtime
+    return _IdxCache.data
+
+
+@app.get("/api/properties/search")
+def api_properties_search(q: str = "", limit: int = 50):
+    """Search properties by any field. Returns matching property summaries."""
+    from cleo.properties.search import search
+
+    if not q.strip():
+        return []
+
+    index_data = _load_search_index()
+    if not index_data:
+        raise HTTPException(404, "No search index. Run 'cleo properties' first.")
+
+    props_data = _load_properties()
+    if not props_data:
+        raise HTTPException(404, "No properties. Run 'cleo properties' first.")
+
+    results = search(index_data, q.strip(), limit=limit)
+    properties = props_data.get("properties", {})
+
+    # Return lightweight summaries for the results list
+    output = []
+    for pid, score in results:
+        prop = properties.get(pid)
+        if not prop:
+            continue
+        output.append({
+            "property_id": pid,
+            "arn": prop.get("arn"),
+            "primary_address": prop.get("primary_address"),
+            "city": prop.get("city"),
+            "current_owner": (prop.get("current_owner") or {}).get("name", ""),
+            "latest_sale_date": (prop.get("latest_transaction") or {}).get("sale_date", ""),
+            "latest_sale_price": (prop.get("latest_transaction") or {}).get("sale_price"),
+            "sources": prop.get("sources"),
+            "transaction_count": prop.get("transaction_count"),
+            "tenant_count": len(prop.get("tenants", [])),
+            "centroid_lat": prop.get("centroid_lat"),
+            "centroid_lng": prop.get("centroid_lng"),
+            "score": score,
+        })
+
+    return output
+
+
+@app.get("/api/properties/stats")
+def api_properties_stats():
+    """Get property master list stats."""
+    props_data = _load_properties()
+    if not props_data:
+        return {"built": False}
+    return props_data.get("meta", {})
+
+
+# ---------------------------------------------------------------------------
+# Properties browse API (front-facing app)
+# ---------------------------------------------------------------------------
+
+class _BrandInfoCache:
+    data: dict | None = None
+
+def _load_brand_info() -> dict:
+    """Build BR_XXXXX -> {brand, store_name, category} lookup (cached in memory)."""
+    if _BrandInfoCache.data is not None:
+        return _BrandInfoCache.data
+
+    from cleo.config import NORMALIZED_DIR, MASTER_BRANDS_CSV
+    import csv
+
+    # Brand name -> category from master CSV
+    categories: dict[str, str] = {}
+    if MASTER_BRANDS_CSV.exists():
+        with open(MASTER_BRANDS_CSV, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                name = (row.get("Brand Name") or "").strip()
+                cat = (row.get("Category") or "").strip()
+                if name and cat:
+                    categories[name.lower()] = cat
+
+    # Aliases for scraped brand names that differ from CSV names
+    _BRAND_ALIASES: dict[str, str] = {
+        "chipotle": "chipotle mexican grill",
+        "domino's": "dominos pizza",
+        "indigo": "indigo / chapters",
+        "kelseys": "kelseys original roadhouse",
+        "land rover": "land-rover",
+        "longo's": "longos",
+        "mary brown's": "mary brown's chicken",
+        "mcdonald's": "mcdonalds",
+        "montana's": "montana's bbq & bar",
+        "no frills": "nofrills",
+        "petsmart": "pet smart",
+        "popeyes": "popeyes louisiana kitchen",
+        "your independent grocer": "independant",
+    }
+
+    def _lookup_category(brand_name: str) -> str:
+        key = brand_name.lower()
+        cat = categories.get(key, "")
+        if not cat:
+            alias = _BRAND_ALIASES.get(key, "")
+            cat = categories.get(alias, "")
+        return cat
+
+    # BR_XXXXX -> {brand, store_name, category} from normalized records
+    info: dict[str, dict] = {}
+    norm_active = NORMALIZED_DIR / "active"
+    if norm_active.exists():
+        for path in norm_active.glob("BR_*.json"):
+            try:
+                rec = json.loads(path.read_text(encoding="utf-8"))
+                brand = rec.get("brand", "")
+                info[path.stem] = {
+                    "brand": brand,
+                    "store_name": rec.get("store_name", ""),
+                    "category": _lookup_category(brand),
+                }
+            except Exception:
+                continue
+
+    _BrandInfoCache.data = info
+    return info
+
+
+class _FiltersCache:
+    data: dict | None = None
+    mtime: float = 0
+
+def _load_filters() -> dict:
+    """Build available filter values (cached by properties.json mtime)."""
+    from cleo.config import PROPERTIES_PATH
+    if not PROPERTIES_PATH.exists():
+        return {"cities": [], "categories": []}
+    mtime = PROPERTIES_PATH.stat().st_mtime
+    if _FiltersCache.mtime == mtime and _FiltersCache.data is not None:
+        return _FiltersCache.data
+
+    props_data = _load_properties()
+    if not props_data:
+        return {"cities": [], "categories": []}
+
+    brand_info = _load_brand_info()
+    properties = props_data.get("properties", {})
+    cities: set[str] = set()
+    categories: set[str] = set()
+
+    brands: set[str] = set()
+
+    for prop in properties.values():
+        city = prop.get("city", "").strip()
+        # Skip cities that look like full addresses (start with digits)
+        if city and not city[0].isdigit():
+            cities.add(city)
+        for tenant in prop.get("tenants", []):
+            if tenant.get("source") == "brand":
+                info = brand_info.get(tenant["source_id"]) or {}
+                cat = info.get("category", "")
+                brand_name = info.get("brand", "")
+                if cat:
+                    categories.add(cat)
+                if brand_name:
+                    brands.add(brand_name)
+            elif tenant.get("source") == "osm":
+                cat = tenant.get("category", "")
+                name = tenant.get("name", "")
+                if cat:
+                    categories.add(cat)
+                if name:
+                    brands.add(name)
+
+    _FiltersCache.data = {"cities": sorted(cities), "categories": sorted(categories), "brands": sorted(brands)}
+    _FiltersCache.mtime = mtime
+    return _FiltersCache.data
+
+
+@app.get("/api/properties/filters")
+def api_properties_filters():
+    """Return available filter values for the properties browse UI."""
+    return _load_filters()
+
+
+@app.get("/api/properties/browse")
+def api_properties_browse(
+    q: str = "",
+    city: str = "",
+    category: str = "",
+    min_price: int = 0,
+    max_price: int = 0,
+    sort: str = "latest_sale_date",
+    order: str = "desc",
+    page: int = 1,
+    per_page: int = 25,
+):
+    """Browse properties with filtering, sorting, and pagination."""
+    from cleo.properties.search import search as idx_search
+
+    props_data = _load_properties()
+    if not props_data:
+        raise HTTPException(404, "No properties. Run 'cleo properties' first.")
+
+    properties = props_data.get("properties", {})
+    brand_info = _load_brand_info()
+
+    # --- determine candidate PIDs ---
+    scores: dict[str, float] = {}
+    if q.strip():
+        index_data = _load_search_index()
+        if index_data:
+            results = idx_search(index_data, q.strip(), limit=20000)
+            scores = {pid: sc for pid, sc in results}
+            candidates = set(scores.keys())
+        else:
+            candidates = set(properties.keys())
+    else:
+        candidates = set(properties.keys())
+
+    # --- helper: tenant categories for a property ---
+    def _tenant_categories(prop: dict) -> set[str]:
+        cats: set[str] = set()
+        for t in prop.get("tenants", []):
+            if t.get("source") == "brand":
+                c = (brand_info.get(t["source_id"]) or {}).get("category", "")
+                if c:
+                    cats.add(c.lower())
+            elif t.get("source") == "osm":
+                c = t.get("category", "")
+                if c:
+                    cats.add(c.lower())
+        return cats
+
+    # --- helper: tenant display names (deduplicated) ---
+    def _tenant_names(prop: dict) -> list[str]:
+        seen: set[str] = set()
+        names: list[str] = []
+        for t in prop.get("tenants", []):
+            if t.get("source") == "brand":
+                info = brand_info.get(t["source_id"])
+                n = info["brand"] if info else t["source_id"]
+            elif t.get("source") == "osm":
+                n = t.get("name", t["source_id"])
+            else:
+                continue
+            if n.lower() not in seen:
+                seen.add(n.lower())
+                names.append(n)
+        return names
+
+    # --- apply filters ---
+    filtered: list[dict] = []
+    city_lower = city.lower() if city else ""
+    cat_lower = category.lower() if category else ""
+
+    for pid in candidates:
+        prop = properties.get(pid)
+        if not prop:
+            continue
+
+        if city_lower and prop.get("city", "").lower() != city_lower:
+            continue
+
+        if cat_lower and cat_lower not in _tenant_categories(prop):
+            continue
+
+        latest = prop.get("latest_transaction") or {}
+        price = latest.get("sale_price") or 0
+        if min_price and price < min_price:
+            continue
+        if max_price and price > max_price:
+            continue
+
+        filtered.append(prop)
+
+    # --- sort ---
+    def _sort_key(p: dict):
+        if sort == "latest_sale_price":
+            return (p.get("latest_transaction") or {}).get("sale_price") or 0
+        if sort == "city":
+            return p.get("city", "").lower()
+        if sort == "transaction_count":
+            return p.get("transaction_count", 0)
+        if sort == "relevance" and scores:
+            return scores.get(p.get("property_id", ""), 0)
+        # default: latest_sale_date
+        return (p.get("latest_transaction") or {}).get("sale_date") or ""
+
+    use_sort = sort
+    if q.strip() and sort == "latest_sale_date":
+        use_sort = "relevance"
+
+    reverse = order == "desc"
+    if use_sort == "relevance":
+        reverse = True
+    filtered.sort(key=lambda p: _sort_key(p) if use_sort != "relevance" else scores.get(p.get("property_id", ""), 0), reverse=reverse)
+
+    # --- paginate ---
+    total = len(filtered)
+    start = (page - 1) * per_page
+    page_items = filtered[start:start + per_page]
+
+    # --- build response ---
+    results = []
+    for prop in page_items:
+        latest = prop.get("latest_transaction") or {}
+        owner = prop.get("current_owner") or {}
+        results.append({
+            "property_id": prop.get("property_id"),
+            "arn": prop.get("arn"),
+            "primary_address": prop.get("primary_address"),
+            "city": prop.get("city"),
+            "current_owner": owner.get("name", ""),
+            "latest_sale_date": latest.get("sale_date", ""),
+            "latest_sale_price": latest.get("sale_price"),
+            "sources": prop.get("sources", []),
+            "transaction_count": prop.get("transaction_count", 0),
+            "tenants": _tenant_names(prop),
+            "tenant_count": len(prop.get("tenants", [])),
+        })
+
+    return {
+        "results": results,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Properties geo API (map)
+# ---------------------------------------------------------------------------
+
+class _GeoCache:
+    data: dict | None = None
+    mtime: float = 0
+
+
+def _resolve_tenants(prop: dict, brand_info: dict) -> tuple[list[str], list[str], list[str]]:
+    """Resolve tenant names and categories for a property record."""
+    tenant_names: list[str] = []
+    tenant_cat_list: list[str] = []
+    tenant_cats: set[str] = set()
+    seen: set[str] = set()
+    for t in prop.get("tenants", []):
+        if t.get("source") == "brand":
+            info = brand_info.get(t["source_id"]) or {}
+            n = info.get("brand", t["source_id"])
+            cat = info.get("category", "")
+        elif t.get("source") == "osm":
+            n = t.get("name", t["source_id"])
+            cat = t.get("category", "")
+        else:
+            continue
+        key = n.lower()
+        if key not in seen:
+            seen.add(key)
+            tenant_names.append(n)
+            tenant_cat_list.append(cat)
+        if cat:
+            tenant_cats.add(cat)
+    return tenant_names, tenant_cat_list, list(tenant_cats)
+
+
+def _build_geo_features() -> dict:
+    """Build GeoJSON FeatureCollection of all properties with coordinates."""
+    props_data = _load_properties()
+    if not props_data:
+        return {"type": "FeatureCollection", "features": [], "total": 0}
+
+    brand_info = _load_brand_info()
+    properties = props_data.get("properties", {})
+    features = []
+
+    for pid, prop in properties.items():
+        lat = prop.get("centroid_lat")
+        lng = prop.get("centroid_lng")
+        if lat is None or lng is None:
+            continue
+
+        tenant_names, tenant_cat_list, categories = _resolve_tenants(prop, brand_info)
+        latest = prop.get("latest_transaction") or {}
+        owner = prop.get("current_owner") or {}
+
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "properties": {
+                "id": pid,
+                "address": prop.get("primary_address", ""),
+                "city": prop.get("city", ""),
+                "owner": owner.get("name", ""),
+                "latest_price": latest.get("sale_price"),
+                "latest_date": latest.get("sale_date", ""),
+                "tenants": tenant_names,
+                "tenant_categories": tenant_cat_list,
+                "categories": categories,
+                "sources": prop.get("sources", []),
+                "transaction_count": prop.get("transaction_count", 0),
+                "parcel_method": prop.get("parcel_method", ""),
+            },
+        })
+
+    return {"type": "FeatureCollection", "features": features, "total": len(features)}
+
+
+@app.get("/api/properties/geo")
+def api_properties_geo():
+    """Return all properties as a GeoJSON FeatureCollection for the map."""
+    if not PROPERTIES_PATH.exists():
+        return {"type": "FeatureCollection", "features": [], "total": 0}
+    mtime = PROPERTIES_PATH.stat().st_mtime
+    if _GeoCache.mtime != mtime or _GeoCache.data is None:
+        _GeoCache.data = _build_geo_features()
+        _GeoCache.mtime = mtime
+    return JSONResponse(_GeoCache.data)
+
+
+# ---------------------------------------------------------------------------
+# Parcel cache bbox API (map)
+# ---------------------------------------------------------------------------
+
+class _ParcelCacheStore:
+    data: dict | None = None
+    mtime: float = 0
+    arn_to_pid: dict[str, str] | None = None
+
+
+def _load_parcel_cache() -> dict | None:
+    """Load parcel_cache.json with mtime-based caching."""
+    if not PARCEL_CACHE_PATH.exists():
+        return None
+    mtime = PARCEL_CACHE_PATH.stat().st_mtime
+    if _ParcelCacheStore.mtime != mtime:
+        raw = json.loads(PARCEL_CACHE_PATH.read_text(encoding="utf-8"))
+        _ParcelCacheStore.data = raw.get("parcels", {})
+        _ParcelCacheStore.mtime = mtime
+        # Rebuild ARN -> property_id index
+        props_data = _load_properties()
+        idx: dict[str, str] = {}
+        if props_data:
+            for pid, prop in props_data.get("properties", {}).items():
+                arn = prop.get("arn")
+                if arn:
+                    idx[arn] = pid
+        _ParcelCacheStore.arn_to_pid = idx
+    return _ParcelCacheStore.data
+
+
+@app.get("/api/parcels/cache/bbox")
+def api_parcels_cache_bbox(
+    south: float, west: float, north: float, east: float
+):
+    """Return provincial parcel polygons within the map viewport, enriched with property data."""
+    parcels = _load_parcel_cache()
+    if not parcels:
+        return {"type": "FeatureCollection", "features": []}
+
+    arn_to_pid = _ParcelCacheStore.arn_to_pid or {}
+    props_data = _load_properties()
+    properties = props_data.get("properties", {}) if props_data else {}
+    brand_info = _load_brand_info()
+    features = []
+
+    for arn, parcel in parcels.items():
+        centroid = parcel.get("centroid")
+        if not centroid or len(centroid) < 2:
+            continue
+        lat, lng = centroid[0], centroid[1]
+        if not (south <= lat <= north and west <= lng <= east):
+            continue
+
+        geom = parcel.get("geometry")
+        if not geom:
+            continue
+
+        pid = arn_to_pid.get(arn, "")
+        prop = properties.get(pid, {})
+        tenant_names, tenant_cat_list, categories = _resolve_tenants(prop, brand_info)
+        latest = prop.get("latest_transaction") or {}
+        owner = prop.get("current_owner") or {}
+
+        # First photo from latest transaction (if any)
+        photo = ""
+        for txn in prop.get("transactions", []):
+            photos = txn.get("photos", [])
+            if photos:
+                photo = photos[0]
+                break
+
+        features.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": {
+                "arn": arn,
+                "pin": parcel.get("pin"),
+                "property_id": pid,
+                "address": prop.get("primary_address", ""),
+                "city": prop.get("city", ""),
+                "owner": owner.get("name", ""),
+                "latest_price": latest.get("sale_price"),
+                "latest_date": latest.get("sale_date", ""),
+                "tenants": tenant_names,
+                "tenant_categories": tenant_cat_list,
+                "categories": categories,
+                "sources": prop.get("sources", []),
+                "transaction_count": prop.get("transaction_count", 0),
+                "parcel_method": prop.get("parcel_method", ""),
+                "photo": photo,
+            },
+        })
+
+        if len(features) >= 2000:
+            break
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/parcels/cache/arn/{arn}")
+def api_parcels_cache_arn(arn: str):
+    """Return a single parcel polygon by ARN."""
+    parcels = _load_parcel_cache()
+    if not parcels or arn not in parcels:
+        raise HTTPException(status_code=404, detail="Parcel not found")
+    parcel = parcels[arn]
+    geom = parcel.get("geometry")
+    if not geom:
+        raise HTTPException(status_code=404, detail="No geometry for parcel")
+    return {
+        "type": "Feature",
+        "geometry": geom,
+        "properties": {
+            "arn": arn,
+            "pin": parcel.get("pin"),
+        },
+    }
+
+
+# Property detail — MUST be after all fixed-path /api/properties/* routes
+# so that FastAPI doesn't match "browse", "filters", "stats", "search" as a property_id.
+@app.get("/api/properties/{property_id}")
+def api_property_detail(property_id: str):
+    """Get full property record by P-ID, enriched with brand names."""
+    props_data = _load_properties()
+    if not props_data:
+        raise HTTPException(404, "No properties. Run 'cleo properties' first.")
+
+    prop = props_data.get("properties", {}).get(property_id)
+    if not prop:
+        raise HTTPException(404, f"Property not found: {property_id}")
+
+    # Enrich brand tenants with name + category
+    brand_info = _load_brand_info()
+    enriched = dict(prop)
+    enriched_tenants = []
+    for t in enriched.get("tenants", []):
+        t = dict(t)
+        if t.get("source") == "brand":
+            info = brand_info.get(t["source_id"]) or {}
+            t["brand"] = info.get("brand", "")
+            t["store_name"] = info.get("store_name", "")
+            t["category"] = info.get("category", "")
+        enriched_tenants.append(t)
+    enriched["tenants"] = enriched_tenants
+
+    return JSONResponse(enriched)
 
 
 # ---------------------------------------------------------------------------

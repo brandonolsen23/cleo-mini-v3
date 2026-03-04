@@ -102,16 +102,6 @@
       </div>
     </a>
 
-    <a class="card" href="/review/extract">
-      <div class="card-title">
-        Extract (legacy)
-        <span class="card-tag tag-planned">Deprecated</span>
-      </div>
-      <div class="card-desc">
-        Legacy address extraction from raw parsed data. Replaced by Normalize + Expand pipeline.
-      </div>
-    </a>
-
     <a class="card disabled" href="/review/geocode">
       <div class="card-title">
         Geocode
@@ -123,14 +113,25 @@
       </div>
     </a>
 
-    <a class="card disabled" href="/review/parcels">
+    <a class="card" href="/review/parcelled">
       <div class="card-title">
-        Parcels
-        <span class="card-tag tag-planned">Planned</span>
+        Parcelled
+        <span class="card-tag tag-ready">Ready</span>
       </div>
       <div class="card-desc">
-        Review parcel boundary matching and zoning data.
-        Map-based polygon overlay with property alignment.
+        Review parcel resolution results: ARN/PIN/spatial method, confidence, and geometry.
+        Three-panel view: Input Identifiers | Active Parcelled | Sandbox Parcelled.
+      </div>
+    </a>
+
+    <a class="card" href="/review/compiled">
+      <div class="card-title">
+        Compiled
+        <span class="card-tag tag-ready">Ready</span>
+      </div>
+      <div class="card-desc">
+        Review final compiled records from all pipeline stages.
+        Three-panel view: Upstream Inputs | Active Compiled | Sandbox Compiled.
       </div>
     </a>
 
@@ -154,23 +155,6 @@
       <div class="card-title">Pipeline Inspector</div>
       <div class="card-desc">
         Four-column view tracing a single record through HTML, Parsed, Extracted, and Geocoded stages.
-      </div>
-    </a>
-
-    <a class="card" href="/party-review">
-      <div class="card-title">Party Review</div>
-      <div class="card-desc">
-        Review party groupings, company clustering, and affiliation suggestions.
-      </div>
-    </a>
-
-    <a class="card" href="/">
-      <div class="card-title">
-        Legacy Review
-        <span class="card-tag tag-planned">Deprecated</span>
-      </div>
-      <div class="card-desc">
-        Original combined parse + extract review page. Kept for backward compatibility.
       </div>
     </a>
 

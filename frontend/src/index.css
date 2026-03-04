@@ -2,39 +2,175 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 206 6% 7%;          /* slate-12 approx */
-    --card: 0 0% 100%;                /* pure white cards */
-    --card-foreground: 206 6% 7%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 206 6% 7%;
-    --primary: 160 42% 46%;           /* jade-9 approx */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 210 14% 93%;         /* slate-3 approx */
-    --secondary-foreground: 206 6% 7%;
-    --muted: 210 14% 93%;             /* slate-3 */
-    --muted-foreground: 206 6% 40%;   /* slate-11 approx */
-    --accent: 210 14% 96%;            /* slate-2 approx */
-    --accent-foreground: 206 6% 7%;
-    --destructive: 0 72% 51%;         /* red-9 approx */
-    --destructive-foreground: 0 0% 100%;
-    --border: 210 14% 91%;            /* lighter border */
-    --input: 210 9% 83%;
-    --ring: 160 42% 46%;              /* jade-9 */
-    --radius: 0.75rem;
+/*
+ * ── WorkOS Dashboard Design System ──────────────────────────
+ *
+ * Built on Radix Themes with slate gray palette.
+ * Font: Untitled Sans by Klim Type Foundry (same as WorkOS).
+ * Gray: slate (cool grays with a subtle blue tint on P3 displays).
+ *
+ * Weight convention (matches WorkOS):
+ *   400 = Regular  → body text, inactive nav
+ *   500 = Medium   → headings, emphasis, active nav, labels
+ *   700 = Bold     → registered in @font-face but NOT used in UI
+ *
+ * Tailwind mapping:
+ *   font-normal  = 400 (Regular)
+ *   font-medium  = 500 (Medium)  ← use this for emphasis
+ *   font-semibold = 500 (Medium) ← remapped in tailwind.config.js
+ *   font-bold    = 500 (Medium)  ← remapped in tailwind.config.js
+ *
+ * Color tokens: use Radix --gray-N and --gray-aN exclusively.
+ *   Never use hardcoded rgba() or hex for grays.
+ *   Semantic colors: --green-11 (positive), --red-11 (negative).
+ */
 
-    --default-font-family: 'Geist Variable', -apple-system, BlinkMacSystemFont, sans-serif;
-    --code-font-family: 'Geist Mono Variable', ui-monospace, monospace;
-  }
+/* ── @font-face ──────────────────────────────────────────────── */
 
-  * {
-    @apply border-border;
-  }
+@font-face {
+  font-family: "Untitled Sans";
+  src:
+    url("./assets/fonts/UntitledSans-Regular.woff2") format("woff2"),
+    url("./assets/fonts/UntitledSans-Regular.woff") format("woff");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
 
-  body {
-    @apply bg-background text-foreground antialiased font-sans;
-    letter-spacing: -0.015em;
-  }
+@font-face {
+  font-family: "Untitled Sans";
+  src:
+    url("./assets/fonts/UntitledSans-Medium.woff2") format("woff2"),
+    url("./assets/fonts/UntitledSans-Medium.woff") format("woff");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Untitled Sans";
+  src:
+    url("./assets/fonts/UntitledSans-Bold.woff2") format("woff2"),
+    url("./assets/fonts/UntitledSans-Bold.woff") format("woff");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Design tokens ───────────────────────────────────────────── */
+
+:root {
+  /* Elevation shadows (neutral-tinted for slate) */
+  --elevation-1: 0px 0px 0px 1px rgba(0, 0, 0, 0.1);
+  --elevation-2: 0px 4px 8px -2px rgba(0, 0, 0, 0.05),
+    0px 2px 8px -2px rgba(0, 0, 0, 0.09);
+  --elevation-3: 0px 8px 16px -4px rgba(0, 0, 0, 0.03),
+    0px 8px 16px -4px rgba(0, 0, 0, 0.09);
+  --elevation-4: 0px 16px 24px -6px rgba(0, 0, 0, 0.03),
+    0px 16px 24px -6px rgba(0, 0, 0, 0.09);
+
+  /* Layout */
+  --sidebar-width: 220px;
+  --header-height: 56px;
+  --card-radius: 12px;
+  --card-padding: 24px;
+}
+
+/* ── Global body ─────────────────────────────────────────────── */
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Radix Themes overrides ──────────────────────────────────── *
+ * Must be on .radix-themes (not :root) to beat Radix's own
+ * .radix-themes block. Same specificity + later cascade = we win.
+ */
+.radix-themes {
+  /* Font stacks */
+  --default-font-family: "Untitled Sans", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --heading-font-family: "Untitled Sans", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+  --code-font-family: "SF Mono", "Menlo", "Consolas", monospace;
+
+  /* WorkOS custom slate-12 (from their dashboard inspector) */
+  --slate-12: #2b333b;
+  --slate-a12: rgba(0, 10, 19, 0.832);
+
+  min-height: 100vh;
+}
+
+/* Radix Heading: Medium weight + tight letter-spacing */
+.rt-Heading {
+  font-weight: 500;
+  letter-spacing: 0em;
+}
+
+/* ── App Layout Grid ─────────────────────────────────────────── */
+
+.app-layout {
+  display: grid;
+  grid-template:
+    "navbar header" var(--header-height)
+    "navbar main" calc(100dvh - var(--header-height)) / var(--sidebar-width)
+    1fr;
+  height: 100dvh;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────── *
+ * Uses Radix slate tokens directly (not pure-black-alpha).
+ * On P3 displays, slate-a* tokens have a subtle blue tint.
+ */
+.app-sidebar {
+  grid-area: navbar;
+  --nav-text-inactive: var(--gray-11);
+  --nav-text-active: var(--gray-12);
+  --nav-icon-inactive: var(--gray-a9);
+  --nav-icon-active: var(--gray-a9);
+  --nav-active-bg: var(--gray-a4);
+  --nav-hover-bg: var(--gray-a3);
+}
+
+.app-header {
+  grid-area: header;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.app-main {
+  grid-area: main;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* ── Mapbox popup overrides ─────────────────────────────────── */
+
+.mapboxgl-popup-content {
+  padding: 12px 14px !important;
+  border-radius: var(--radius-3) !important;
+  border: 1px solid var(--gray-6);
+  box-shadow: var(--elevation-2) !important;
+  font-family: "Untitled Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.mapboxgl-popup-close-button {
+  font-size: 18px;
+  padding: 2px 6px;
+  color: var(--gray-9);
+  right: 4px;
+  top: 4px;
+}
+
+.mapboxgl-popup-close-button:hover {
+  color: var(--gray-12);
+  background: transparent;
+}
+
+.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip {
+  border-top-color: var(--gray-6);
 }

@@ -537,7 +537,7 @@ def expand_cmd(action: str, rollback_version: str, force: bool):
 
 
 @main.command(name="parcelled")
-@click.option("--sandbox", "action", flag_value="sandbox", help="Resolve parcels for all records → sandbox.")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Resolve parcels for all records → sandbox (or resume existing).")
 @click.option("--diff", "action", flag_value="diff", help="Compare parcelled sandbox vs active.")
 @click.option("--promote", "action", flag_value="promote", help="Promote parcelled sandbox → next version.")
 @click.option("--discard", "action", flag_value="discard", help="Delete parcelled sandbox.")
@@ -545,7 +545,8 @@ def expand_cmd(action: str, rollback_version: str, force: bool):
 @click.option("--status", "action", flag_value="status", help="Show parcelled version info.")
 @click.option("--force", is_flag=True, help="Force promote even with regressions.")
 @click.option("--skip-api", is_flag=True, help="Cache-only mode (no provincial API queries).")
-def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: bool):
+@click.option("--fresh", is_flag=True, help="Discard existing sandbox and start from scratch.")
+def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: bool, fresh: bool):
     """Resolve parcels for all source records using ARN/PIN/coords.
 
     Reads expanded (addresses), parsed (RT ARNs/PINs), gw_parsed (GW ARNs/PINs),
@@ -554,9 +555,17 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
 
     Resolution priority: ARN direct > PIN bridge > spatial (coords) > none.
 
+    Supports resuming interrupted runs: if a sandbox already exists, --sandbox
+    will skip records that have already been processed and continue with the rest.
+    Use --fresh to discard an existing sandbox and start over.
+
+    Handles Ctrl+C gracefully: saves the parcel cache and exits cleanly so
+    you can resume later with another --sandbox.
+
     Examples:
-        cleo parcelled --sandbox             # Resolve parcels (cache + API)
+        cleo parcelled --sandbox             # Resolve parcels (resumes if sandbox exists)
         cleo parcelled --sandbox --skip-api  # Cache-only (fast, no token needed)
+        cleo parcelled --sandbox --fresh     # Discard existing sandbox, start from scratch
         cleo parcelled --diff                # Compare sandbox vs active
         cleo parcelled --promote             # Promote sandbox → next version
         cleo parcelled --status              # Show version info
@@ -565,7 +574,7 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
     from cleo.parcelled.engine import resolve_all
     from cleo.config import (
         EXPANDED_DIR, PARSED_DIR, GW_PARSED_DIR,
-        COORDINATES_PATH, PARCELLED_REVIEWS_PATH,
+        COORDINATES_PATH, PARCELLED_REVIEWS_PATH, OSM_POIS_DIR,
     )
 
     store = parcelled_ver.store
@@ -580,68 +589,185 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
     if action == "status":
         ver = store.active_version()
         versions = store.list_versions()
-        has_sandbox = store.sandbox_path().is_dir()
+        sb_path = store.sandbox_path()
+        has_sandbox = sb_path.is_dir()
         click.echo(f"Active version:  {ver or '(none)'}")
         click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
-        click.echo(f"Sandbox:         {'exists' if has_sandbox else '(none)'}")
+        if has_sandbox:
+            sb_count = sum(1 for f in sb_path.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Sandbox:         exists ({sb_count:,} records)")
+        else:
+            click.echo(f"Sandbox:         (none)")
 
     elif action == "sandbox":
-        if store.sandbox_path().is_dir():
-            click.echo("Sandbox already exists. Use --discard first.", err=True)
-            raise SystemExit(1)
+        from cleo.parcelled.engine import TokenRefreshFailed
 
         expanded_active = EXPANDED_DIR / "active"
         if not expanded_active.exists():
             click.echo("No active expanded version. Run 'cleo expand --sandbox' then '--promote' first.", err=True)
             raise SystemExit(1)
 
+        # Handle existing sandbox: discard with --fresh, otherwise resume
+        sb_path = store.sandbox_path()
+        if sb_path.is_dir() and fresh:
+            import shutil
+            existing_count = sum(1 for f in sb_path.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Discarding existing sandbox ({existing_count:,} records)...")
+            shutil.rmtree(sb_path)
+
         parsed_active = PARSED_DIR / "active"
         gw_parsed_active = GW_PARSED_DIR / "active"
         if not gw_parsed_active.exists():
-            # Fall back to v001 if no active symlink
             gw_parsed_active = GW_PARSED_DIR / "v001"
 
         expanded_ver = expanded_active.resolve().name if expanded_active.is_symlink() else ""
+        expanded_total = sum(1 for f in expanded_active.glob("*.json") if f.stem != "_meta")
 
-        sb = store.ensure_sandbox()
+        # OSM POIs (enter at parcelled stage directly)
+        osm_active = OSM_POIS_DIR / "active"
+        osm_total = 0
+        if osm_active.exists():
+            osm_total = sum(1 for f in osm_active.glob("*.json") if f.stem != "_meta")
+        all_total = expanded_total + osm_total
+
+        sb = store.sandbox_path()
+        if not sb.exists():
+            sb.mkdir(parents=True)
+
         mode = "cache-only" if skip_api else "cache + provincial API"
-        click.echo(f"Resolving parcels from expanded/{expanded_ver} → {sb}")
-        click.echo(f"Mode: {mode}\n")
+        click.echo(f"Resolving parcels from expanded/{expanded_ver} ({expanded_total:,} records)")
+        if osm_total:
+            click.echo(f"  + {osm_total:,} OSM POI records (total: {all_total:,})")
+        click.echo(f"Mode: {mode}")
+        if not skip_api:
+            click.echo(f"Auto-restarts on errors and token expiry. Ctrl+C twice to force stop.\n")
+        else:
+            click.echo("")
 
-        summary = resolve_all(
-            expanded_dir=expanded_active,
-            parsed_dir=parsed_active,
-            gw_parsed_dir=gw_parsed_active,
-            coordinates_path=COORDINATES_PATH,
-            output_dir=sb,
-            source_version=expanded_ver,
-            skip_api=skip_api,
-        )
-        click.echo(
-            f"\nDone: {summary['resolved']:,} resolved, "
-            f"{summary['unresolved']:,} unresolved, "
-            f"{summary['errors']:,} errors in {summary['elapsed']:.1f}s"
-        )
-        if summary.get("by_method"):
-            click.echo(f"\nBy resolution method:")
-            for method, count in sorted(summary["by_method"].items(), key=lambda x: -x[1]):
-                pct = count / summary["total"] * 100 if summary["total"] else 0
+        # ---- Auto-retry loop ----
+        # Keeps restarting resolve_all until all records are done, the user
+        # hits Ctrl+C, or we exhaust max_restarts consecutive failures.
+        import time as _time
+        max_restarts = 10
+        restart_count = 0
+        cumulative_processed = 0
+        cumulative_resolved = 0
+        cumulative_errors = 0
+        start_time = _time.time()
+        user_interrupted = False
+        last_summary = None
+
+        while True:
+            # Check if sandbox is already complete
+            sb_done = sum(1 for f in sb.glob("*.json") if f.stem != "_meta")
+            if sb_done >= all_total:
+                click.echo(f"All {all_total:,} records already in sandbox. Ready for --diff / --promote")
+                break
+
+            resume = sb_done > 0
+            if resume:
+                click.echo(f"{'Resuming' if restart_count == 0 else 'Restarting'}: "
+                            f"{sb_done:,} done, {all_total - sb_done:,} remaining"
+                            f"{f' (restart #{restart_count})' if restart_count > 0 else ''}")
+
+            try:
+                summary = resolve_all(
+                    expanded_dir=expanded_active,
+                    parsed_dir=parsed_active,
+                    gw_parsed_dir=gw_parsed_active,
+                    coordinates_path=COORDINATES_PATH,
+                    output_dir=sb,
+                    source_version=expanded_ver,
+                    skip_api=skip_api,
+                    resume=resume,
+                    osm_pois_dir=osm_active if osm_total else None,
+                )
+
+                last_summary = summary
+                cumulative_processed += summary.get("processed", 0)
+                cumulative_resolved += summary.get("resolved", 0)
+                cumulative_errors += summary.get("errors", 0)
+
+                if summary.get("interrupted"):
+                    # User hit Ctrl+C — respect it, don't restart
+                    user_interrupted = True
+                    click.echo(f"\nInterrupted by user (cache saved).")
+                    break
+
+                # Check if we're done
+                sb_done = sum(1 for f in sb.glob("*.json") if f.stem != "_meta")
+                if sb_done >= all_total:
+                    click.echo(f"\nAll records processed.")
+                    break
+
+                # If we processed records this round, reset restart counter
+                if summary.get("processed", 0) > 0:
+                    restart_count = 0
+                else:
+                    restart_count += 1
+
+            except TokenRefreshFailed as e:
+                restart_count += 1
+                click.echo(f"\nToken refresh failed: {e}")
+                if restart_count >= max_restarts:
+                    click.echo(f"Giving up after {max_restarts} consecutive failures.")
+                    break
+                wait = min(60, 15 * restart_count)
+                click.echo(f"Waiting {wait}s then retrying (attempt {restart_count}/{max_restarts})...")
+                _time.sleep(wait)
+                continue
+
+            except KeyboardInterrupt:
+                user_interrupted = True
+                click.echo(f"\nForce interrupted (cache saved).")
+                break
+
+            except Exception as e:
+                restart_count += 1
+                click.echo(f"\nUnexpected error: {e}")
+                if restart_count >= max_restarts:
+                    click.echo(f"Giving up after {max_restarts} consecutive failures.")
+                    break
+                wait = min(60, 15 * restart_count)
+                click.echo(f"Waiting {wait}s then retrying (attempt {restart_count}/{max_restarts})...")
+                _time.sleep(wait)
+                continue
+
+        # ---- Final report ----
+        total_elapsed = _time.time() - start_time
+        sb_done = sum(1 for f in sb.glob("*.json") if f.stem != "_meta")
+
+        click.echo(f"\n{'=' * 50}")
+        click.echo(f"  Sandbox: {sb_done:,} / {all_total:,} records")
+        if cumulative_processed:
+            click.echo(
+                f"  This session: {cumulative_processed:,} processed, "
+                f"{cumulative_resolved:,} resolved, "
+                f"{cumulative_errors:,} errors in {total_elapsed:.0f}s"
+            )
+        if restart_count > 0:
+            click.echo(f"  Restarts: {restart_count}")
+
+        if sb_done >= all_total:
+            click.echo(f"\n  All records done. Next: cleo parcelled --diff")
+        elif user_interrupted:
+            click.echo(f"\n  Resume anytime: cleo parcelled --sandbox")
+        else:
+            click.echo(f"\n  {all_total - sb_done:,} remaining. Resume: cleo parcelled --sandbox")
+
+        # Print method/source breakdown from last run if available
+        if last_summary and last_summary.get("by_method"):
+            click.echo(f"\nBy resolution method (last run):")
+            for method, count in sorted(last_summary["by_method"].items(), key=lambda x: -x[1]):
+                pct = count / last_summary["processed"] * 100 if last_summary.get("processed") else 0
                 click.echo(f"  {method:<20s}  {count:>7,}  ({pct:.1f}%)")
-        if summary.get("by_source"):
-            click.echo(f"\nBy source:")
-            for src, count in sorted(summary["by_source"].items()):
-                click.echo(f"  {src:<20s}  {count:>7,}")
-        rs = summary.get("resolver_stats", {})
-        if rs:
+        if last_summary and last_summary.get("resolver_stats"):
+            rs = last_summary["resolver_stats"]
             click.echo(f"\nResolver: {rs.get('cache_hits', 0):,} cache hits, "
                         f"{rs.get('api_hits', 0):,} API hits, "
                         f"{rs.get('api_misses', 0):,} API misses, "
                         f"{rs.get('api_errors', 0):,} API errors")
             click.echo(f"Cache total: {rs.get('cache_total', 0):,} parcels")
-        if summary.get("token_refreshes", 0) > 0:
-            click.echo(f"Token refreshes: {summary['token_refreshes']}")
-        if summary["error_ids"]:
-            click.echo(f"\nErrors: {', '.join(summary['error_ids'][:10])}")
 
     elif action == "diff":
         try:
@@ -714,7 +840,7 @@ def compile_cmd(action: str, rollback_version: str, force: bool):
     from cleo.compiled.engine import compile_all
     from cleo.config import (
         PARSED_DIR, EXPANDED_DIR, COORDINATES_PATH,
-        PROPERTY_PARCEL_INDEX_PATH, PARCELS_PATH, COMPILED_REVIEWS_PATH,
+        PARCELLED_DIR, COMPILED_REVIEWS_PATH, OSM_POIS_DIR,
     )
 
     store = compiled_ver.store
@@ -753,15 +879,24 @@ def compile_cmd(action: str, rollback_version: str, force: bool):
 
         parsed_ver = parsed_active.resolve().name if parsed_active.is_symlink() else ""
         expanded_ver = expanded_active.resolve().name if expanded_active.is_symlink() else ""
-        click.echo(f"Compiling records from parsed/{parsed_ver} + expanded/{expanded_ver} → {sb}\n")
+        parcelled_active = PARCELLED_DIR / "active"
+        parcelled_ver = parcelled_active.resolve().name if parcelled_active.is_symlink() else "(none)"
+
+        osm_active = OSM_POIS_DIR / "active"
+        osm_count = sum(1 for f in osm_active.glob("*.json") if f.stem != "_meta") if osm_active.exists() else 0
+
+        click.echo(f"Compiling from parsed/{parsed_ver} + expanded/{expanded_ver} + parcelled/{parcelled_ver}")
+        if osm_count:
+            click.echo(f"  + {osm_count:,} OSM POI records")
+        click.echo("")
 
         summary = compile_all(
             parsed_dir=parsed_active,
             expanded_dir=expanded_active,
             coordinates_path=COORDINATES_PATH,
-            parcel_index_path=PROPERTY_PARCEL_INDEX_PATH,
-            parcels_path=PARCELS_PATH,
+            parcelled_dir=parcelled_active,
             output_dir=sb,
+            osm_pois_dir=osm_active if osm_count else None,
         )
         click.echo(
             f"\nDone: {summary['compiled']:,} compiled, "
@@ -1311,149 +1446,106 @@ def geocoded_cmd(action: str, rollback_version: str, force: bool):
 
 @main.command()
 @click.option("--status", "show_status", is_flag=True, help="Show property registry stats.")
-@click.option("--dry-run", is_flag=True, help="Preview what would change without writing.")
-@click.option("--apply-geocodes", is_flag=True, help="Backfill lat/lng from geocode cache into properties.")
-@click.option("--refresh", is_flag=True, help="With --apply-geocodes: re-compute ALL coords using best multi-provider median.")
-def properties(show_status: bool, dry_run: bool, apply_geocodes: bool, refresh: bool):
-    """Build or update the canonical property registry.
+def properties(show_status: bool):
+    """Build the property master list from compiled data.
 
-    Scans all active parsed records, deduplicates by (address, city),
-    assigns stable P-IDs, and saves to data/properties.json.
+    Groups all compiled records by parcel ARN. Each unique ARN becomes
+    one property. Builds a full-text search index across all fields.
 
-    Existing entries are preserved — RT ID lists are updated, manually
-    added properties and edits are kept.
+    Read-only derived layer — rebuilt fresh from compiled/active each time.
+    Records without a parcel are parked in properties_unresolved.json.
+
+    \b
+    Outputs:
+        data/properties.json              — Master list (~19K properties)
+        data/properties_unresolved.json   — Records with no parcel (parked)
+        data/search_index.json            — Inverted index for search
 
     \b
     Examples:
-        cleo properties --status     # Show registry stats
-        cleo properties --dry-run    # Preview without writing
-        cleo properties              # Build/update the registry
+        cleo properties --status   # Show stats
+        cleo properties            # Full rebuild from compiled
     """
-    from cleo.config import PROPERTIES_PATH
-    from cleo.properties.registry import build_registry, save_registry, load_registry
+    import json as _json
+    from cleo.config import COMPILED_DIR, PROPERTIES_PATH, PROPERTIES_UNRESOLVED_PATH, SEARCH_INDEX_PATH
 
     if show_status:
-        reg = load_registry(PROPERTIES_PATH)
-        meta = reg.get("meta", {})
-        props = reg.get("properties", {})
-        if not props:
-            click.echo("No property registry found. Run 'cleo properties' to build it.")
-            return
-        click.echo(f"Property registry: {PROPERTIES_PATH}")
-        click.echo(f"  Built:                {meta.get('built', 'unknown')}")
-        click.echo(f"  Source:               {meta.get('source_dir', 'unknown')}")
-        click.echo(f"  Total properties:     {meta.get('total_properties', len(props)):,}")
-        click.echo(f"  Transactions linked:  {meta.get('total_transactions_linked', 0):,}")
-        click.echo(f"  Multi-transaction:    {meta.get('multi_transaction_properties', 0):,}")
-        sources = set()
-        for p in props.values():
-            sources.update(p.get("sources", []))
-        click.echo(f"  Sources:              {', '.join(sorted(sources))}")
-        return
-
-    if apply_geocodes:
-        from cleo.config import COORDINATES_PATH, GEOCODE_CACHE_PATH, EXTRACTED_DIR
-        from cleo.properties.registry import load_registry, save_registry, backfill_geocodes
-
         if not PROPERTIES_PATH.exists():
-            click.echo("No property registry found. Run 'cleo properties' first.", err=True)
-            raise SystemExit(1)
+            click.echo("No properties built yet. Run 'cleo properties' to build.")
+            return
+        data = _json.loads(PROPERTIES_PATH.read_text(encoding="utf-8"))
+        meta = data.get("meta", {})
+        props = data.get("properties", {})
+        click.echo(f"Property master list: {PROPERTIES_PATH}")
+        click.echo(f"  Built:                  {meta.get('built_at', 'unknown')}")
+        click.echo(f"  Compiled records:       {meta.get('total_compiled_records', 0):,}")
+        click.echo(f"  Total properties:       {meta.get('total_properties', len(props)):,}")
+        click.echo(f"  Unresolved:             {meta.get('total_unresolved', 0):,}")
+        click.echo(f"  Multi-source:           {meta.get('multi_source_properties', 0):,}")
+        click.echo(f"  With transactions:      {meta.get('properties_with_transactions', 0):,}")
+        click.echo(f"  With tenants:           {meta.get('properties_with_tenants', 0):,}")
+        click.echo(f"  ARN disagreements:      {meta.get('arn_disagreements', 0):,}")
+        by_source = meta.get("by_source", {})
+        for src in sorted(by_source):
+            click.echo(f"    {src}: {by_source[src]:,}")
+        click.echo(f"  Build time:             {meta.get('elapsed_seconds', 0):.1f}s")
 
-        registry = load_registry(PROPERTIES_PATH)
-
-        ext_active = None
-        ext_store = extract_ver.store
-        ext_active = ext_store.active_dir()
-
-        # Use CoordinateStore if available, fall back to legacy cache
-        coord_store = None
-        if COORDINATES_PATH.exists():
-            from cleo.geocode.store import CoordinateStore
-            coord_store = CoordinateStore(COORDINATES_PATH)
-            mode = "refresh all" if refresh else "backfill missing"
-            click.echo(f"Applying geocode coordinates ({mode}) from coordinates.json...")
-        elif GEOCODE_CACHE_PATH.exists():
-            click.echo("Backfilling geocode coordinates from geocode_cache.json (legacy)...")
-            if refresh:
-                click.echo("  (--refresh requires coordinates.json, ignoring)", err=True)
-        else:
-            click.echo("No coordinate data found. Run 'cleo geocode --sync' first.", err=True)
-            raise SystemExit(1)
-
-        result = backfill_geocodes(
-            registry=registry,
-            cache_path=GEOCODE_CACHE_PATH if not coord_store else None,
-            extracted_dir=ext_active,
-            coord_store=coord_store,
-            refresh_all=refresh and coord_store is not None,
-        )
-
-        click.echo(f"  Already had coords:  {result['already_had']:,}")
-        click.echo(f"  Newly filled:        {result['updated']:,}")
-        click.echo(f"  Refreshed (changed): {result.get('refreshed', 0):,}")
-        click.echo(f"  No match:            {result['no_match']:,}")
-
-        changed = result["updated"] + result.get("refreshed", 0)
-
-        if changed > 0 and not dry_run:
-            save_registry(registry, PROPERTIES_PATH)
-            click.echo(f"\nSaved to {PROPERTIES_PATH}")
-        elif dry_run:
-            click.echo(f"\nDry run — no changes written.")
-        else:
-            click.echo(f"\nNo coordinate changes to apply.")
-
-        # Run divergence report if using CoordinateStore
-        if coord_store is not None:
-            import json as _json
-            divergences = coord_store.divergence_report(threshold_m=500)
-            if divergences:
-                report_path = DATA_DIR / "geocode_divergences.json"
-                report_path.write_text(
-                    _json.dumps(divergences, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                click.echo(f"\nProvider divergence report (>500m):")
-                click.echo(f"  {len(divergences):,} addresses with provider disagreement")
-                click.echo(f"  Worst: {divergences[0]['address'][:60]} ({divergences[0]['max_distance_m']:,.0f}m)")
-                click.echo(f"  Saved to {report_path}")
-            else:
-                click.echo(f"\nNo provider divergences >500m found.")
-
+        if SEARCH_INDEX_PATH.exists():
+            idx = _json.loads(SEARCH_INDEX_PATH.read_text(encoding="utf-8"))
+            idx_meta = idx.get("meta", {})
+            click.echo(f"\n  Search index tokens:    {idx_meta.get('total_tokens', 0):,}")
+            click.echo(f"  Search index entries:   {idx_meta.get('total_entries', 0):,}")
         return
 
-    act = active_dir()
-    if act is None:
-        click.echo("No active parse version. Run 'cleo parse --sandbox' then '--promote' first.", err=True)
+    # Check compiled/active exists
+    compiled_active = COMPILED_DIR / "active"
+    if not compiled_active.exists():
+        click.echo("No compiled/active found. Run 'cleo compile' first.", err=True)
         raise SystemExit(1)
 
-    # Check for active extracted dir (enables compound address matching)
-    ext_active = None
-    ext_store = extract_ver.store
-    ext_active = ext_store.active_dir()
+    # Build properties
+    from cleo.properties.builder import build_properties
+    from cleo.properties.search import build_search_index, save_search_index
 
-    existing_path = PROPERTIES_PATH if PROPERTIES_PATH.exists() else None
-    action = "Updating" if existing_path else "Building"
-    click.echo(f"{action} property registry from {act.name}...")
-    if ext_active:
-        click.echo(f"  (with expanded address matching from {ext_active.name})")
+    click.echo(f"Building properties from {compiled_active}...")
+    properties_data, unresolved_data = build_properties(compiled_active)
+    meta = properties_data["meta"]
 
-    registry = build_registry(
-        parsed_dir=act,
-        existing_registry_path=existing_path,
-        extracted_dir=ext_active,
+    click.echo(f"\n  Total properties:       {meta['total_properties']:,}")
+    click.echo(f"  Unresolved (parked):    {meta['total_unresolved']:,}")
+    click.echo(f"  Multi-source:           {meta['multi_source_properties']:,}")
+    click.echo(f"  With transactions:      {meta['properties_with_transactions']:,}")
+    click.echo(f"  With tenants:           {meta['properties_with_tenants']:,}")
+    click.echo(f"  ARN disagreements:      {meta['arn_disagreements']:,}")
+    by_source = meta.get("by_source", {})
+    for src in sorted(by_source):
+        click.echo(f"    {src}: {by_source[src]:,}")
+
+    # Save properties
+    PROPERTIES_PATH.write_text(
+        _json.dumps(properties_data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
-    meta = registry["meta"]
+    size_mb = PROPERTIES_PATH.stat().st_size / 1024 / 1024
+    click.echo(f"\n  Saved properties: {PROPERTIES_PATH} ({size_mb:.1f} MB)")
 
-    click.echo(f"\n  Total properties:     {meta['total_properties']:,}")
-    click.echo(f"  Transactions linked:  {meta['total_transactions_linked']:,}")
-    click.echo(f"  Multi-transaction:    {meta['multi_transaction_properties']:,}")
+    # Save unresolved
+    PROPERTIES_UNRESOLVED_PATH.write_text(
+        _json.dumps(unresolved_data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    click.echo(f"  Saved unresolved: {PROPERTIES_UNRESOLVED_PATH}")
 
-    if dry_run:
-        click.echo(f"\nDry run — no changes written.")
-    else:
-        save_registry(registry, PROPERTIES_PATH)
-        click.echo(f"\nSaved to {PROPERTIES_PATH}")
+    # Build and save search index
+    click.echo("\nBuilding search index...")
+    index_data = build_search_index(properties_data["properties"])
+    save_search_index(index_data, SEARCH_INDEX_PATH)
+    idx_meta = index_data["meta"]
+    click.echo(f"  Tokens:  {idx_meta['total_tokens']:,}")
+    click.echo(f"  Entries: {idx_meta['total_entries']:,}")
+
+    total_time = meta["elapsed_seconds"] + idx_meta["elapsed_seconds"]
+    click.echo(f"\nDone in {total_time:.1f}s")
 
 
 @main.command()
@@ -2835,6 +2927,104 @@ def google_enrich_cmd(phase, tier, limit, dry_run):
 
     # Print results
     click.echo(json.dumps(result, indent=2))
+
+
+# ─── OSM POI Snapshot ──────────────────────────────────────────────
+
+
+@main.command(name="osm-snapshot")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Build OSM POI snapshot → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare OSM snapshot sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote OSM snapshot sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete OSM snapshot sandbox.")
+@click.option("--status", "action", flag_value="status", help="Show OSM snapshot version info.")
+@click.option("--skip-fetch", is_flag=True, help="Reuse cached osm_brands.json instead of querying Overpass.")
+@click.option("--force", is_flag=True, help="Force promote even with regressions.")
+def osm_snapshot_cmd(action: str, skip_fetch: bool, force: bool):
+    """Create versioned OSM POI snapshot records for the parcelled pipeline.
+
+    Fetches all branded POIs in Ontario from Overpass, filters to master brands,
+    and writes one OSM_{5-digit} record per POI. These enter the pipeline directly
+    at the Parcelled stage (spatial resolution only — no parse/normalize/expand).
+
+    Examples:
+        cleo osm-snapshot --sandbox               # Fetch from Overpass, build snapshot
+        cleo osm-snapshot --sandbox --skip-fetch   # Reuse cached osm_brands.json
+        cleo osm-snapshot --diff                   # Compare sandbox vs active
+        cleo osm-snapshot --promote                # Promote snapshot → next version
+        cleo osm-snapshot --status                 # Show version info
+    """
+    from cleo.osm import versioning as osm_ver
+    from cleo.osm.snapshot import build_snapshot
+    from cleo.config import OSM_POIS_DIR
+    from cleo.osm.brand_search import OSM_BRANDS_PATH
+
+    store = osm_ver.store
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        sb_path = store.sandbox_path()
+        has_sandbox = sb_path.is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        if has_sandbox:
+            sb_count = sum(1 for f in sb_path.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Sandbox:         exists ({sb_count:,} records)")
+        else:
+            click.echo(f"Sandbox:         (none)")
+
+    elif action == "sandbox":
+        sb = store.sandbox_path()
+        if sb.exists():
+            import shutil
+            existing = sum(1 for f in sb.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Discarding existing sandbox ({existing:,} records)...")
+            shutil.rmtree(sb)
+
+        cached_path = OSM_BRANDS_PATH if skip_fetch else None
+        mode = "cached osm_brands.json" if skip_fetch else "Overpass API"
+        click.echo(f"Building OSM snapshot from {mode}...")
+
+        summary = build_snapshot(
+            output_dir=sb,
+            skip_fetch=skip_fetch,
+            cached_pois_path=cached_path,
+        )
+
+        click.echo(f"\nSnapshot built:")
+        click.echo(f"  Fetched:  {summary['total_fetched']:,}")
+        click.echo(f"  Filtered: {summary['filtered']:,} (master brands)")
+        click.echo(f"  Written:  {summary['written']:,} records")
+        click.echo(f"  Elapsed:  {summary['elapsed']:.1f}s")
+        click.echo(f"\nNext: cleo osm-snapshot --diff / --promote")
+
+    elif action == "diff":
+        diff = store.diff_summary()
+        if not diff:
+            click.echo("No sandbox or no active version to compare.")
+        else:
+            click.echo(f"Added:   {diff.get('added', 0):,}")
+            click.echo(f"Removed: {diff.get('removed', 0):,}")
+            click.echo(f"Changed: {diff.get('changed', 0):,}")
+            click.echo(f"Same:    {diff.get('same', 0):,}")
+
+    elif action == "promote":
+        ver = store.promote()
+        click.echo(f"Promoted to {ver}")
+
+    elif action == "discard":
+        sb = store.sandbox_path()
+        if sb.exists():
+            import shutil
+            shutil.rmtree(sb)
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
 
 
 # ─── OSM Tenant Discovery ─────────────────────────────────────────

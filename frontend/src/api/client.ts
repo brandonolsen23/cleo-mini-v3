@@ -1,26 +1,28 @@
-const BASE = "/api";
+const API_BASE = "/api";
 
-export async function fetchApi<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${res.statusText}`);
+export async function fetchApi<T>(
+  path: string,
+  params?: Record<string, string>
+): Promise<T> {
+  const url = new URL(`${API_BASE}${path}`, window.location.origin);
+  if (params) {
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   }
+  const res = await fetch(url.toString());
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
   return res.json();
 }
 
 export async function mutateApi<T>(
   path: string,
-  method: "POST" | "PUT" | "DELETE" | "PATCH",
-  body?: unknown,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  body?: unknown
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API error ${res.status}: ${text}`);
-  }
+  if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
   return res.json();
 }
