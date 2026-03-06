@@ -5,7 +5,7 @@ import {
   useRef,
   useMemo,
 } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import Map, {
   Source,
   Layer,
@@ -16,11 +16,13 @@ import Map, {
   type ViewStateChangeEvent,
 } from "react-map-gl/mapbox";
 import { Text, Badge, Spinner } from "@radix-ui/themes";
-import { Funnel, X, ArrowRight } from "@phosphor-icons/react";
+import { Funnel, X } from "@phosphor-icons/react";
 import { fetchApi } from "@/api/client";
-import { formatCurrency, formatDate } from "@/lib/utils";
-import { categoryColor } from "@/lib/theme";
 import type { FiltersResponse } from "@/types";
+import {
+  ParcelPopupContent,
+  type ParcelPopupProps,
+} from "@/components/map/ParcelPopup";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -96,45 +98,6 @@ const selectedParcelOutlineLayer: any = {
 // Types
 // ---------------------------------------------------------------------------
 
-interface ParcelPopupProps {
-  arn: string;
-  pin: string;
-  property_id: string;
-  address: string;
-  city: string;
-  owner: string;
-  latest_price: number | null;
-  latest_date: string;
-  tenants: string[];
-  tenant_categories: string[];
-  categories: string[];
-  sources: string[];
-  transaction_count: number;
-  parcel_method: string;
-  photo: string;
-}
-
-/** Title-case a string: "WONDERLAND ROAD SOUTH" → "Wonderland Road South" */
-function toTitleCase(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/(?:^|\s|[-/])\S/g, (ch) => ch.toUpperCase());
-}
-
-/** Strip province and postal code from an address like "123 MAIN ST, LONDON, ONTARIO, N6L 1R4" */
-function shortAddress(raw: string): string {
-  // Split on commas, keep only parts before province
-  const parts = raw.split(",").map((p) => p.trim());
-  // Remove trailing parts that look like province or postal code
-  const kept: string[] = [];
-  for (const part of parts) {
-    if (/^(ONTARIO|ON|ALBERTA|AB|BRITISH COLUMBIA|BC|QUEBEC|QC|MANITOBA|MB|SASKATCHEWAN|SK|NOVA SCOTIA|NS|NEW BRUNSWICK|NB|PEI|PE|NL|NT|NU|YT)$/i.test(part)) break;
-    if (/^[A-Z]\d[A-Z]\s*\d[A-Z]\d$/i.test(part)) break;
-    kept.push(part);
-  }
-  return toTitleCase(kept.join(", "));
-}
-
 interface GeoProperties {
   id: string;
   address: string;
@@ -165,7 +128,6 @@ interface GeoResponse {
 // ---------------------------------------------------------------------------
 
 export function MapPage() {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const mapRef = useRef<MapRef>(null);
 
@@ -435,6 +397,8 @@ export function MapPage() {
             address: p.address || "",
             city: p.city || "",
             owner: p.owner || "",
+            group_id: p.group_id || "",
+            group_name: p.group_name || "",
             latest_price: p.latest_price ?? null,
             latest_date: p.latest_date || "",
             tenants:
@@ -622,69 +586,7 @@ export function MapPage() {
             maxWidth="320px"
             offset={12}
           >
-            <div className="flex flex-col gap-1.5">
-              {/* Property photo */}
-              {popupInfo.props.photo && (
-                <img
-                  src={popupInfo.props.photo}
-                  alt=""
-                  className="w-full rounded-[var(--radius-2)] object-cover"
-                  style={{ maxHeight: 160 }}
-                />
-              )}
-
-              {/* Address (title case, no province/postal) + city */}
-              <Text size="2" weight="medium" className="text-[var(--gray-12)]">
-                {shortAddress(popupInfo.props.address) || popupInfo.props.city || "Unknown"}
-              </Text>
-
-              {/* Owner */}
-              {popupInfo.props.owner && (
-                <Text size="1" className="text-[var(--gray-11)]">
-                  {popupInfo.props.owner}
-                </Text>
-              )}
-
-              {/* Last sale price + date */}
-              {popupInfo.props.latest_price != null && (
-                <div className="flex items-center gap-2">
-                  <Text
-                    size="1"
-                    weight="medium"
-                    className="text-[var(--gray-12)]"
-                  >
-                    {formatCurrency(popupInfo.props.latest_price)}
-                  </Text>
-                  {popupInfo.props.latest_date && (
-                    <Text size="1" className="text-[var(--gray-9)]">
-                      {formatDate(popupInfo.props.latest_date)}
-                    </Text>
-                  )}
-                </div>
-              )}
-
-              {/* All tenant badges */}
-              {popupInfo.props.tenants.length > 0 && (
-                <div className="flex flex-wrap gap-1 pt-0.5">
-                  {popupInfo.props.tenants.map((t, i) => (
-                    <Badge key={t} size="1" variant="soft" color={categoryColor(popupInfo.props.tenant_categories[i] || "")}>
-                      {t}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-
-              {/* View property link */}
-              {popupInfo.props.property_id && (
-                <button
-                  className="mt-1 flex items-center gap-1 text-xs font-medium text-[var(--accent-11)] hover:underline"
-                  onClick={() => navigate(`/properties/${popupInfo.props.property_id}`)}
-                >
-                  View property
-                  <ArrowRight size={12} />
-                </button>
-              )}
-            </div>
+            <ParcelPopupContent props={popupInfo.props} />
           </Popup>
         )}
       </Map>

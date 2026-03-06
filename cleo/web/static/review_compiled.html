@@ -478,6 +478,8 @@ function renderCompiled(container, data, compareData) {
   if (source === 'realtrack') {
     const txn = data.transaction || {};
     html += section('Transaction', [
+      field('Property Type', data.property_type),
+      field('Transaction Type', data.transaction_type),
       field('Sale Date', txn.sale_date),
       field('Sale Price', txn.sale_price != null ? priceDisplay(txn.sale_price) : ''),
       field('Sale Price Raw', txn.sale_price_display),

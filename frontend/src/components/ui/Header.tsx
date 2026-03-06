@@ -6,7 +6,7 @@ import { MagnifyingGlassIcon, QuestionMarkCircledIcon } from "@radix-ui/react-ic
 const ROUTE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/properties": "Properties",
-  "/owners": "Entities",
+  "/groups": "Groups",
   "/transactions": "Transactions",
   "/trace": "Trace",
   "/monitor": "Monitor",

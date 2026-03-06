@@ -9,6 +9,9 @@ import {
   GlobeIcon,
   GearIcon,
   PersonIcon,
+  IdCardIcon,
+  RocketIcon,
+  ListBulletIcon,
 } from "@radix-ui/react-icons";
 
 interface NavItem {
@@ -27,9 +30,17 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Overview", href: "/dashboard", icon: DashboardIcon },
       { label: "Properties", href: "/properties", icon: HomeIcon },
-      { label: "Entities", href: "/owners", icon: PersonIcon },
+      { label: "Groups", href: "/groups", icon: PersonIcon },
+      { label: "Contacts", href: "/contacts", icon: IdCardIcon },
       { label: "Transactions", href: "/transactions", icon: FileTextIcon },
       { label: "Map", href: "/map", icon: GlobeIcon },
+    ],
+  },
+  {
+    heading: "CRM",
+    items: [
+      { label: "Deals", href: "/deals", icon: RocketIcon },
+      { label: "Lists", href: "/lists", icon: ListBulletIcon },
     ],
   },
   {

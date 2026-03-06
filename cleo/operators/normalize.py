@@ -1,6 +1,6 @@
-"""Thin wrappers around existing normalize functions for operator matching."""
+"""Thin wrappers around shared normalize functions for operator matching."""
 
-from cleo.parties.normalize import normalize_name, normalize_address
+from cleo.utils.text import normalize_name, normalize_address
 from brands.match import normalize_city, extract_street_number, street_similarity
 
 __all__ = [

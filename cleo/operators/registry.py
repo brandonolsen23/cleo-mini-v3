@@ -323,27 +323,5 @@ def _apply_property_confirmation(prop_id: str, op_id: str, slug: str) -> None:
 
 
 def _apply_party_confirmation(group_id: str, op_id: str, operator: dict) -> None:
-    """Add operator URL and contacts to a party group."""
-    from cleo.config import PARTIES_PATH
-    from cleo.parties.registry import load_registry as load_party_reg, save_registry as save_party_reg
-
-    reg = load_party_reg(PARTIES_PATH)
-    parties = reg.get("parties", {})
-    if group_id not in parties:
-        return
-
-    group = parties[group_id]
-    overrides = reg.setdefault("overrides", {})
-    group_overrides = overrides.setdefault(group_id, {})
-
-    # Set URL
-    url = operator.get("url", "")
-    if url:
-        group_overrides["url"] = url
-
-    # Add operator reference
-    op_ids = group.setdefault("operator_ids", [])
-    if op_id not in op_ids:
-        op_ids.append(op_id)
-
-    save_party_reg(reg, PARTIES_PATH)
+    """Stub — legacy party registry removed. No-op."""
+    pass

@@ -249,6 +249,22 @@ function renderNormalized(container, data, compareData) {
   if (!data) { container.innerHTML = ''; return; }
 
   let html = '';
+
+  // Record metadata
+  html += section('Record', [
+    field('Source', data.source, compareData?.source),
+    field('Source ID', data.source_id, compareData?.source_id),
+    field('Source File', data.source_file, compareData?.source_file),
+    field('Transaction ARN', data.transaction_arn, compareData?.transaction_arn),
+    field('Raw ARN', data.raw_arn, compareData?.raw_arn),
+    field('Raw Municipality', data.raw_municipality, compareData?.raw_municipality),
+    field('Brand', data.brand, compareData?.brand),
+    field('Store Name', data.store_name, compareData?.store_name),
+    field('Brand ID', data.brand_id, compareData?.brand_id),
+    field('GW ID', data.gw_id, compareData?.gw_id),
+    field('PIN', data.pin, compareData?.pin),
+  ]);
+
   html += renderAddressBlock('Property', data.property, compareData?.property);
 
   // Alternate property addresses
@@ -259,12 +275,8 @@ function renderNormalized(container, data, compareData) {
   }
 
   // Owner info (GeoWarehouse records)
-  if (data.owner_name || compareData?.owner_name) {
-    html += renderOwnerInfo(data, compareData);
-  }
-  if (data.owner_address || compareData?.owner_address) {
-    html += renderAddressBlock('Owner Address', data.owner_address, compareData?.owner_address);
-  }
+  html += renderOwnerInfo(data, compareData);
+  html += renderAddressBlock('Owner Address', data.owner_address, compareData?.owner_address);
 
   html += renderAddressBlock('Seller', data.seller, compareData?.seller);
   html += renderAddressBlock('Buyer', data.buyer, compareData?.buyer);
@@ -277,49 +289,36 @@ function renderAddressBlock(title, block, cmpBlock) {
   if (!block) return '';
   const cmp = cmpBlock || {};
 
-  // Skip empty blocks
-  if (block.category === 'empty') return '';
-
   let html = `<div class="section"><div class="section-title">${escHtml(title)}</div>`;
 
+  html += normField('Raw Address', block.raw_address, cmp.raw_address);
   html += normField('Street Number', block.street_number, cmp.street_number);
   html += normField('Street Name', block.street_name, cmp.street_name);
   html += normField('Street Suffix', block.street_suffix, cmp.street_suffix);
-  if (block.street_direction || cmp.street_direction)
-    html += normField('Direction', block.street_direction, cmp.street_direction);
-  if (block.unit || cmp.unit)
-    html += normField('Unit', block.unit, cmp.unit);
-  if (block.unit_type || cmp.unit_type)
-    html += normField('Unit Type', block.unit_type, cmp.unit_type);
-  if (block.po_box || cmp.po_box)
-    html += normField('PO Box', block.po_box, cmp.po_box);
-  if (block.rural_route || cmp.rural_route)
-    html += normField('Rural Route', block.rural_route, cmp.rural_route);
-  if (block.building_name || cmp.building_name)
-    html += normField('Building Name', block.building_name, cmp.building_name);
+  html += normField('Direction', block.street_direction, cmp.street_direction);
+  html += normField('Unit', block.unit, cmp.unit);
+  html += normField('Unit Type', block.unit_type, cmp.unit_type);
+  html += normField('PO Box', block.po_box, cmp.po_box);
+  html += normField('Rural Route', block.rural_route, cmp.rural_route);
+  html += normField('Building Name', block.building_name, cmp.building_name);
   html += normField('City', block.normalized_city, cmp.normalized_city);
-  if (block.city_status || cmp.city_status)
-    html += normField('City Status', block.city_status, cmp.city_status);
-  if (block.normalized_province)
-    html += normField('Province', block.normalized_province, cmp.normalized_province);
-  if (block.normalized_postal_code || cmp.normalized_postal_code)
-    html += normField('Postal Code', block.normalized_postal_code, cmp.normalized_postal_code);
-  if (block.municipality)
-    html += normField('Municipality', block.municipality, cmp.municipality);
+  html += normField('City Status', block.city_status, cmp.city_status);
+  html += normField('Province', block.normalized_province, cmp.normalized_province);
+  html += normField('Postal Code', block.normalized_postal_code, cmp.normalized_postal_code);
+  html += normField('Municipality', block.municipality, cmp.municipality);
 
-  if (block.address_scope && block.address_scope !== 'ontario') {
-    const scopeCls = block.address_scope === 'international' ? 'cat-skip'
-      : block.address_scope === 'canadian' ? 'cat-warn' : 'cat-warn';
-    html += `<div class="field"><span class="field-label">Scope</span><span class="field-value"><span class="category-badge ${scopeCls}">${escHtml(block.address_scope)}</span></span></div>`;
-  }
+  const scope = block.address_scope || '';
+  const scopeCls = scope === 'international' ? 'cat-skip'
+    : scope === 'canadian' ? 'cat-warn'
+    : scope === 'ontario' ? 'cat-ok' : 'cat-warn';
+  html += `<div class="field"><span class="field-label">Scope</span><span class="field-value"><span class="category-badge ${scopeCls}">${escHtml(scope || '(empty)')}</span></span></div>`;
 
-  if (block.category) {
-    const catCls =
-      block.category === 'street_address' || block.category === 'corporate_seller' || block.category === 'corporate_buyer' || block.category === 'brand'
-        ? 'cat-ok'
-        : block.category === 'no_street_number' ? 'cat-warn' : 'cat-skip';
-    html += `<div class="field"><span class="field-label">Category</span><span class="field-value"><span class="category-badge ${catCls}">${escHtml(block.category)}</span></span></div>`;
-  }
+  const cat = block.category || '';
+  const catCls =
+    cat === 'street_address' || cat === 'corporate_seller' || cat === 'corporate_buyer' || cat === 'brand'
+      ? 'cat-ok'
+      : cat === 'no_street_number' ? 'cat-warn' : 'cat-skip';
+  html += `<div class="field"><span class="field-label">Category</span><span class="field-value"><span class="category-badge ${catCls}">${escHtml(cat || '(empty)')}</span></span></div>`;
 
   html += '</div>';
   return html;

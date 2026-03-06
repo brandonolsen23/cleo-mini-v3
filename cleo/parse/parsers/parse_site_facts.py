@@ -5,7 +5,7 @@ Extracts legal descriptions, PIN, acreage, frontage, zoning, and other site-leve
 
 import re
 from typing import Dict, List, Optional, Tuple
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 # Zoning pattern variations
@@ -159,31 +159,47 @@ def extract_acreage(soup: BeautifulSoup) -> Tuple[str, str]:
     return "", ""
 
 
+_LEGAL_STOP = re.compile(
+    r"^(?:PIN|P\.I\.N|Assessment Roll|ARN|A\.R\.N|\d+(?:\.\d+)?\s*acre"
+    r"|\d+(?:,\d{3})*\s*(?:sq\.?\s*ft|sf)|[NSEW]\s*side\s|[NSEW]/[SN])",
+    re.IGNORECASE,
+)
+
+
 def extract_legal_description(soup: BeautifulSoup) -> str:
     """Extract legal description from the Site section.
 
-    The legal description is the text in the same <p> as the Site header,
-    after the header itself (e.g. 'Plan 453 Part Lots 23 & 24 ...').
-    Subsequent <p> tags hold PIN, location, acreage — not part of the
-    legal description.
+    Walks text nodes after the Site header, collecting lines until a
+    PIN, acreage, location, or ARN line is reached.  Works whether the
+    Site <font> is inside a <p> or a direct child of <body>.
     """
     site_tag = soup.find("font", string=re.compile(r"^Site$", re.IGNORECASE))
     if not site_tag:
         return ""
 
-    parent = site_tag.find_parent("p")
-    if not parent:
-        return ""
+    lines: list[str] = []
+    node = site_tag.next_element
+    while node:
+        # Stop at next section header
+        if isinstance(node, Tag) and node.name == "font":
+            label = node.get_text(strip=True)
+            if label and label != "Site":
+                break
 
-    # Get full text of the Site paragraph, strip the "Site" label
-    full_text = parent.get_text(" ", strip=True)
-    # Remove the leading "Site" label
-    full_text = re.sub(r"^Site\s*", "", full_text, flags=re.IGNORECASE).strip()
+        if isinstance(node, NavigableString):
+            text = node.strip()
+            if text and text != "Site":
+                # Stop if this looks like a non-legal-desc line
+                if _LEGAL_STOP.match(text):
+                    break
+                lines.append(text)
 
-    if len(full_text) > 500:
-        full_text = full_text[:500] + "..."
+        node = node.next_element
 
-    return full_text
+    result = " ".join(lines).strip()
+    if len(result) > 500:
+        result = result[:500] + "..."
+    return result
 
 
 def extract_pins(soup: BeautifulSoup) -> List[str]:
@@ -214,25 +230,34 @@ def extract_pins(soup: BeautifulSoup) -> List[str]:
 
 
 def extract_arn(soup: BeautifulSoup) -> str:
-    """Extract ARN from the page."""
-    # Search in ARN section
-    arn_tag = soup.find("font", string=re.compile(r"A\.?R\.?N\.?", re.IGNORECASE))
+    """Extract ARN from the page.
+
+    Handles both "ARN" and "Assessment Roll Number" labels, and ARN
+    values with spaces (e.g. '19 08 013 320 00750').
+    """
+    # Find the ARN/Assessment Roll Number header
+    arn_tag = soup.find("font", string=re.compile(
+        r"(?:A\.?R\.?N\.?|Assessment\s*Roll\s*Number)", re.IGNORECASE
+    ))
     if arn_tag:
-        parent = arn_tag.find_parent("p")
-        if parent:
-            text = parent.get_text(" ", strip=True)
-            for pattern in ARN_PATTERNS:
-                match = pattern.search(text)
-                if match:
-                    return match.group(1).replace("-", "").replace(" ", "")
-    
-    # Also search entire page
-    page_text = soup.get_text(" ", strip=True)
-    for pattern in ARN_PATTERNS:
-        match = pattern.search(page_text)
-        if match:
-            return match.group(1).replace("-", "").replace(" ", "")
-    
+        # Walk text nodes after the header to find the ARN value
+        node = arn_tag.next_element
+        while node:
+            if isinstance(node, Tag) and node.name == "font":
+                # Hit next section header
+                label = node.get_text(strip=True)
+                if label and not re.match(r"(?:ARN|Assessment)", label, re.IGNORECASE):
+                    break
+            if isinstance(node, NavigableString):
+                text = node.strip()
+                # Skip the header label itself
+                if text and not re.match(r"(?:ARN|Assessment\s*Roll)", text, re.IGNORECASE):
+                    # Extract digits (possibly separated by spaces/dashes)
+                    digits = re.sub(r"[\s\-]", "", text)
+                    if re.match(r"^\d{12,20}$", digits):
+                        return digits
+            node = node.next_element
+
     return ""
 
 

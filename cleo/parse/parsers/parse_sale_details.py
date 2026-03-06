@@ -34,7 +34,7 @@ def normalize_sale_date(date_str):
 
 def parse_sale_date_and_price(soup):
     try:
-        result = {'SaleDate': '', 'SaleDateISO': '', 'SalePrice': ''}
+        result = {'SaleDate': '', 'SaleDateISO': '', 'SalePrice': '', 'TransactionType': ''}
         
         # Find the address tag
         address_tag = soup.find('strong', id='address')
@@ -96,7 +96,15 @@ def parse_sale_date_and_price(soup):
                 result['SaleDateISO'] = iso_date
             if price_part:
                 result['SalePrice'] = f"${price_part}"
-                
+
+        # Transaction type: <font color="#CC0000">Sale Leaseback</font>
+        # Appears after the sale price on the same line
+        txn_type_tag = soup.find('font', color='#CC0000')
+        if txn_type_tag:
+            txn_type_text = txn_type_tag.get_text(strip=True)
+            if txn_type_text:
+                result['TransactionType'] = txn_type_text
+
         return result
         
     except Exception as e:

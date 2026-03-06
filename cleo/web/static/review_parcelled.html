@@ -242,36 +242,41 @@ function renderParcelled(container, data, compareData) {
   const parcel = data.parcel;
   const cmpParcel = compareData?.parcel;
 
+  // Record metadata
+  html += section('Record', [
+    field('ID', data.id),
+    field('Source', data.source),
+    field('Source Version', data.source_version),
+  ]);
+
   // Resolution
   const resFields = [
     field('Method', methodBadge(res.method)),
     field('Confidence', confidenceBadge(res.confidence)),
     field('Chain', chainDisplay(res.method_chain)),
   ];
-  if (res.resolved_arn) {
-    const changed = cmpRes.resolved_arn && res.resolved_arn !== cmpRes.resolved_arn;
-    resFields.push(field('Resolved ARN', arnDisplay(res.resolved_arn), changed));
-  }
-  if (res.pin) {
-    resFields.push(field('Resolved PIN', pinDisplay(res.pin)));
-  }
+  const arnChanged = cmpRes.resolved_arn && res.resolved_arn !== cmpRes.resolved_arn;
+  resFields.push(field('Resolved ARN', res.resolved_arn ? arnDisplay(res.resolved_arn) : '(none)', arnChanged));
+  resFields.push(field('Resolved PIN', res.pin ? pinDisplay(res.pin) : '(none)'));
   html += section('Resolution', resFields);
 
   // Parcel data
   if (parcel) {
     const pFields = [
       field('ARN', arnDisplay(parcel.arn)),
+      field('PIN', parcel.pin ? pinDisplay(parcel.pin) : '(none)'),
     ];
-    if (parcel.pin) pFields.push(field('PIN', pinDisplay(parcel.pin)));
 
     if (parcel.centroid) {
-      // centroid is [lat, lng] array
       const cLat = Array.isArray(parcel.centroid) ? parcel.centroid[0] : parcel.centroid.lat;
       const cLng = Array.isArray(parcel.centroid) ? parcel.centroid[1] : parcel.centroid.lng;
       pFields.push(field('Centroid', coordsLink(cLat, cLng)));
+    } else {
+      pFields.push(field('Centroid', '(none)'));
     }
 
-    if (parcel.source) pFields.push(field('Cache Source', parcel.source));
+    pFields.push(field('Cache Source', parcel.source || '(none)'));
+    pFields.push(field('Cached At', parcel.cached_at || '(none)'));
 
     // Geometry summary
     if (parcel.geometry) {

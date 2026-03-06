@@ -56,10 +56,11 @@ class MapboxClient:
     def batch_forward(
         self,
         addresses: List[str],
-        delay: float = 0.1,
+        delay: float = 1.0,
     ) -> List[Optional[Dict]]:
         """Geocode up to 50 addresses in a single batch POST.
 
+        Default 1.0s delay between batches. Conservative to avoid wasted calls.
         Returns list of result dicts (or None for failures), same order as input.
         """
         if len(addresses) > 50:

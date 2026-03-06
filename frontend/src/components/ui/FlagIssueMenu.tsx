@@ -45,11 +45,11 @@ const FIELD_LABELS: Record<string, string> = {
   tenant_website: "Website",
   tenant_location: "Location / Coordinates",
   tenant_wrong_property: "Wrong Property Match",
-  // Entity-level fields
-  entity_name: "Entity Name",
-  entity_grouping: "Entity Grouping",
+  // Group-level fields
+  group_name: "Group Name",
+  group_linking: "Group Linking",
   missing_transactions: "Missing Transactions",
-  duplicate_entity: "Duplicate Entity",
+  duplicate_group: "Duplicate Group",
   wrong_link: "Wrong Link",
 };
 
@@ -61,9 +61,9 @@ function fieldLabel(field: string): string {
  * 3-dot menu that lets the user flag a data issue on a source record.
  *
  * Props:
- *   sourceId  — the RT/GW/BR/OSM ID or property/entity ID
+ *   sourceId  — the RT/GW/BR/OSM ID or property/group ID
  *   fields    — internal field names to offer in the dropdown
- *   page      — page context (e.g. "entity_detail", "property_detail")
+ *   page      — page context (e.g. "group_detail", "property_detail")
  *   context   — extra context string (e.g. entity name or property address)
  */
 export function FlagIssueMenu({

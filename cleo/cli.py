@@ -52,6 +52,7 @@ from cleo.validate.runner import (
     save_determinations,
     HTML_FLAGS_PATH,
 )
+from cleo.validate.field_runner import run_field_rules, format_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -209,8 +210,10 @@ def check(prop_type: str, check_all: bool):
 @click.option("--discard", "action", flag_value="discard", help="Delete sandbox.")
 @click.option("--rollback-to", "rollback_version", default=None, help="Point active to a specific version.")
 @click.option("--status", "action", flag_value="status", help="Show current version info.")
+@click.option("--rules", "action", flag_value="rules", help="Run field rules against sandbox (or active).")
 @click.option("--force", is_flag=True, help="Force promote even with regressions.")
-def parse_cmd(action: str, rollback_version: str, force: bool):
+@click.option("--limit", default=None, type=int, help="Limit records for --rules.")
+def parse_cmd(action: str, rollback_version: str, force: bool, limit: int):
     """Manage parsed JSON output with versioned snapshots.
 
     Parse all HTML into a sandbox, diff against the current active version,
@@ -220,7 +223,7 @@ def parse_cmd(action: str, rollback_version: str, force: bool):
         action = "rollback"
 
     if not action:
-        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status")
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --rollback-to, --status, --rules")
         raise SystemExit(1)
 
     if action == "status":
@@ -286,6 +289,17 @@ def parse_cmd(action: str, rollback_version: str, force: bool):
             click.echo("Sandbox discarded.")
         else:
             click.echo("No sandbox to discard.")
+
+    elif action == "rules":
+        # Run field rules against sandbox if it exists, otherwise active
+        target = sandbox_path() if sandbox_exists() else active_dir()
+        if target is None:
+            click.echo("No sandbox or active version found.", err=True)
+            raise SystemExit(1)
+        label = "sandbox" if sandbox_exists() else f"active ({active_version()})"
+        click.echo(f"Running field rules against {label}...\n")
+        report = run_field_rules(target, limit=limit)
+        click.echo(format_report(report))
 
     elif action == "rollback":
         try:
@@ -628,7 +642,15 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
         osm_total = 0
         if osm_active.exists():
             osm_total = sum(1 for f in osm_active.glob("*.json") if f.stem != "_meta")
-        all_total = expanded_total + osm_total
+
+        # Radar POIs (enter at parcelled stage directly)
+        from cleo.config import RADAR_POIS_DIR
+        radar_active = RADAR_POIS_DIR / "active"
+        radar_total = 0
+        if radar_active.exists():
+            radar_total = sum(1 for f in radar_active.glob("*.json") if f.stem != "_meta")
+
+        all_total = expanded_total + osm_total + radar_total
 
         sb = store.sandbox_path()
         if not sb.exists():
@@ -637,7 +659,11 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
         mode = "cache-only" if skip_api else "cache + provincial API"
         click.echo(f"Resolving parcels from expanded/{expanded_ver} ({expanded_total:,} records)")
         if osm_total:
-            click.echo(f"  + {osm_total:,} OSM POI records (total: {all_total:,})")
+            click.echo(f"  + {osm_total:,} OSM POI records")
+        if radar_total:
+            click.echo(f"  + {radar_total:,} Radar POI records")
+        if osm_total or radar_total:
+            click.echo(f"  Total: {all_total:,} records")
         click.echo(f"Mode: {mode}")
         if not skip_api:
             click.echo(f"Auto-restarts on errors and token expiry. Ctrl+C twice to force stop.\n")
@@ -681,6 +707,7 @@ def parcelled_cmd(action: str, rollback_version: str, force: bool, skip_api: boo
                     skip_api=skip_api,
                     resume=resume,
                     osm_pois_dir=osm_active if osm_total else None,
+                    radar_pois_dir=radar_active if radar_total else None,
                 )
 
                 last_summary = summary
@@ -1081,9 +1108,9 @@ def extract_cmd(action: str, rollback_version: str, force: bool):
 @click.option("--build-index", is_flag=True, help="Build address index from cache + extracted data.")
 @click.option("--collect", "do_collect", is_flag=True, help="Collect all addresses (RT+GW+brand) into coordinates.json.")
 @click.option("--sync", "do_sync", is_flag=True, help="One-time: seed coordinates.json from geocode_cache.json + brand scrapers.")
-@click.option("--batch-size", type=int, default=50, help="Addresses per batch API call.")
-@click.option("--delay", type=float, default=0.15, help="Seconds between batch API calls.")
-@click.option("--provider", type=click.Choice(["mapbox", "here", "geocodio"]), default="mapbox", help="Geocoding provider.")
+@click.option("--batch-size", type=int, default=25, help="Addresses per batch API call.")
+@click.option("--delay", type=float, default=1.0, help="Seconds between batch API calls.")
+@click.option("--provider", type=click.Choice(["mapbox", "here", "geocodio", "mapquest", "locationiq", "slpy", "maptiler", "radar"]), default="mapbox", help="Geocoding provider.")
 def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, batch_size, delay, provider):
     """Geocode addresses from all sources using Mapbox, HERE, or Geocodio.
 
@@ -1098,10 +1125,11 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
         cleo geocode --provider mapbox               # Geocode pending via Mapbox
         cleo geocode --provider geocodio --limit 2300 # Daily Geocodio batch
         cleo geocode --provider here                 # Geocode pending via HERE
+        cleo geocode --provider mapquest             # Geocode pending via MapQuest
         cleo geocode --build-index                   # Build address index
     """
     from cleo.config import (
-        MAPBOX_TOKEN, HERE_API_KEY, GEOCODIO_KEY,
+        MAPBOX_TOKEN, HERE_API_KEY, MAPQUEST_API_KEY, LOCATIONIQ_KEY, SLPY_API_KEY, MAPTILER_API_KEY, RADAR_API_KEY, GEOCODIO_KEY,
         GEOCODE_CACHE_PATH, COORDINATES_PATH, ADDRESS_INDEX_PATH,
         EXTRACTED_DIR, EXPANDED_DIR, EXTRACT_REVIEWS_PATH, GW_PARSED_DIR, BRANDS_DATA_DIR,
     )
@@ -1245,7 +1273,7 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
                 click.echo("GEOCODIO_KEY not set. Add it to your .env file.", err=True)
                 raise SystemExit(1)
             client = GeocodioClient(GEOCODIO_KEY)
-            if batch_size == 50:  # default wasn't overridden
+            if batch_size == 25:  # default wasn't overridden
                 batch_size = 2300  # Geocodio supports up to 10K, use daily limit
             click.echo(f"Using Geocodio provider (batch size {batch_size})")
         elif provider == "here":
@@ -1254,15 +1282,62 @@ def geocode_cmd(dry_run, limit, show_status, build_index, do_collect, do_sync, b
                 click.echo("HERE_API_KEY not set. Add it to your .env file.", err=True)
                 raise SystemExit(1)
             client = HereClient(HERE_API_KEY)
-            if delay == 0.15:  # default wasn't overridden
-                delay = 0.22  # safe under HERE's 5/sec limit
-            click.echo(f"Using HERE provider ({delay:.2f}s delay)")
+            if delay == 1.0:  # default wasn't overridden
+                delay = 0.5  # 2 req/sec, well under HERE's 5/sec limit
+            click.echo(f"Using HERE provider ({delay:.2f}s delay, ~{1/delay:.0f} addr/sec)")
+        elif provider == "mapquest":
+            from cleo.geocode.mapquest_client import MapQuestClient
+            if not MAPQUEST_API_KEY:
+                click.echo("MAPQUEST_API_KEY not set. Add it to your .env file.", err=True)
+                raise SystemExit(1)
+            client = MapQuestClient(MAPQUEST_API_KEY)
+            if batch_size == 25:  # default wasn't overridden
+                batch_size = 100  # MapQuest batch supports up to 100
+            click.echo(f"Using MapQuest provider (batch {batch_size}, {delay:.1f}s delay)")
+        elif provider == "locationiq":
+            from cleo.geocode.locationiq_client import LocationIQClient
+            if not LOCATIONIQ_KEY:
+                click.echo("LOCATIONIQ_KEY not set. Add it to your .env file.", err=True)
+                raise SystemExit(1)
+            client = LocationIQClient(LOCATIONIQ_KEY)
+            if delay == 1.0:  # default wasn't overridden
+                delay = 0.5  # 2 req/sec, matching their rate limit
+            click.echo(f"Using LocationIQ provider ({delay:.2f}s delay, ~{1/delay:.0f} addr/sec)")
+        elif provider == "slpy":
+            from cleo.geocode.slpy_client import SlpyClient
+            if not SLPY_API_KEY:
+                click.echo("SLPY_API_KEY not set. Add it to your .env file.", err=True)
+                raise SystemExit(1)
+            client = SlpyClient(SLPY_API_KEY)
+            if delay == 1.0:  # default wasn't overridden
+                delay = 1.0  # 60 req/min = 1 req/sec
+            click.echo(f"Using SLPY provider ({delay:.2f}s delay, ~{1/delay:.0f} addr/sec)")
+        elif provider == "maptiler":
+            from cleo.geocode.maptiler_client import MapTilerClient
+            if not MAPTILER_API_KEY:
+                click.echo("MAPTILER_API_KEY not set. Add it to your .env file.", err=True)
+                raise SystemExit(1)
+            client = MapTilerClient(MAPTILER_API_KEY)
+            batch_size = 25  # URL length limit prevents 50
+            if delay == 1.0:  # default wasn't overridden
+                delay = 0.1  # no stated rate limit, be conservative
+            click.echo(f"Using MapTiler provider (batch {batch_size}, {delay:.2f}s delay, ~{batch_size/max(delay,0.01):.0f} addr/sec)")
+        elif provider == "radar":
+            from cleo.geocode.radar_client import RadarClient
+            if not RADAR_API_KEY:
+                click.echo("RADAR_API_KEY not set. Add it to your .env file.", err=True)
+                raise SystemExit(1)
+            client = RadarClient(RADAR_API_KEY)
+            if delay == 1.0:  # default wasn't overridden
+                delay = 0.1  # 10 req/sec
+            click.echo(f"Using Radar provider ({delay:.2f}s delay, ~{1/max(delay,0.01):.0f} addr/sec)")
         else:
             from cleo.geocode.client import MapboxClient
             if not MAPBOX_TOKEN:
                 click.echo("MAPBOX_TOKEN not set. Add it to your .env file.", err=True)
                 raise SystemExit(1)
             client = MapboxClient(MAPBOX_TOKEN)
+            click.echo(f"Using Mapbox provider (batch {batch_size}, {delay:.1f}s delay, ~{batch_size/delay:.0f} addr/sec)")
 
     try:
         summary = run_geocode(
@@ -1446,13 +1521,16 @@ def geocoded_cmd(action: str, rollback_version: str, force: bool):
 
 @main.command()
 @click.option("--status", "show_status", is_flag=True, help="Show property registry stats.")
-def properties(show_status: bool):
+@click.option("--seed-id-map", "seed_map", is_flag=True, help="Seed property ID map from existing properties.json (one-time migration).")
+def properties(show_status: bool, seed_map: bool):
     """Build the property master list from compiled data.
 
     Groups all compiled records by parcel ARN. Each unique ARN becomes
-    one property. Builds a full-text search index across all fields.
+    one property with a stable PRO_NNNNN ID (persisted in property_id_map.json).
+    Builds a full-text search index across all fields.
 
     Read-only derived layer — rebuilt fresh from compiled/active each time.
+    Property IDs are stable across rebuilds via the append-only ID map.
     Records without a parcel are parked in properties_unresolved.json.
 
     \b
@@ -1460,14 +1538,33 @@ def properties(show_status: bool):
         data/properties.json              — Master list (~19K properties)
         data/properties_unresolved.json   — Records with no parcel (parked)
         data/search_index.json            — Inverted index for search
+        data/property_id_map.json         — Persistent ARN → PRO_ mapping
 
     \b
     Examples:
-        cleo properties --status   # Show stats
-        cleo properties            # Full rebuild from compiled
+        cleo properties --status       # Show stats
+        cleo properties                 # Full rebuild from compiled
+        cleo properties --seed-id-map  # Seed ID map from existing data (one-time)
     """
     import json as _json
-    from cleo.config import COMPILED_DIR, PROPERTIES_PATH, PROPERTIES_UNRESOLVED_PATH, SEARCH_INDEX_PATH
+    from cleo.config import COMPILED_DIR, PROPERTIES_PATH, PROPERTIES_UNRESOLVED_PATH, SEARCH_INDEX_PATH, PROPERTY_ID_MAP_PATH
+
+    if seed_map:
+        from cleo.properties.id_map import seed_from_properties
+        if not PROPERTIES_PATH.exists():
+            click.echo("No properties.json found. Run 'cleo properties' first.", err=True)
+            raise SystemExit(1)
+        if PROPERTY_ID_MAP_PATH.exists():
+            click.echo(f"ID map already exists at {PROPERTY_ID_MAP_PATH}", err=True)
+            click.echo("Delete it first if you want to re-seed.", err=True)
+            raise SystemExit(1)
+        id_map = seed_from_properties(PROPERTIES_PATH, PROPERTY_ID_MAP_PATH)
+        count = len(id_map["map"])
+        next_id = id_map["meta"]["next_id"]
+        click.echo(f"Seeded property ID map: {count:,} ARN -> PRO_ mappings")
+        click.echo(f"  Next ID: PRO_{next_id:05d}")
+        click.echo(f"  Saved to: {PROPERTY_ID_MAP_PATH}")
+        return
 
     if show_status:
         if not PROPERTIES_PATH.exists():
@@ -1490,6 +1587,15 @@ def properties(show_status: bool):
             click.echo(f"    {src}: {by_source[src]:,}")
         click.echo(f"  Build time:             {meta.get('elapsed_seconds', 0):.1f}s")
 
+        # ID map status
+        if PROPERTY_ID_MAP_PATH.exists():
+            id_data = _json.loads(PROPERTY_ID_MAP_PATH.read_text(encoding="utf-8"))
+            id_meta = id_data.get("meta", {})
+            click.echo(f"\n  ID map mappings:        {len(id_data.get('map', {})):,}")
+            click.echo(f"  ID map next_id:         PRO_{id_meta.get('next_id', 0):05d}")
+        else:
+            click.echo(f"\n  ID map:                 not yet created (run --seed-id-map)")
+
         if SEARCH_INDEX_PATH.exists():
             idx = _json.loads(SEARCH_INDEX_PATH.read_text(encoding="utf-8"))
             idx_meta = idx.get("meta", {})
@@ -1503,12 +1609,19 @@ def properties(show_status: bool):
         click.echo("No compiled/active found. Run 'cleo compile' first.", err=True)
         raise SystemExit(1)
 
+    # Auto-seed ID map if properties.json exists but map doesn't
+    if not PROPERTY_ID_MAP_PATH.exists() and PROPERTIES_PATH.exists():
+        from cleo.properties.id_map import seed_from_properties
+        click.echo("Seeding property ID map from existing properties.json...")
+        id_map = seed_from_properties(PROPERTIES_PATH, PROPERTY_ID_MAP_PATH)
+        click.echo(f"  Seeded {len(id_map['map']):,} ARN -> PRO_ mappings\n")
+
     # Build properties
     from cleo.properties.builder import build_properties
     from cleo.properties.search import build_search_index, save_search_index
 
     click.echo(f"Building properties from {compiled_active}...")
-    properties_data, unresolved_data = build_properties(compiled_active)
+    properties_data, unresolved_data = build_properties(compiled_active, PROPERTY_ID_MAP_PATH)
     meta = properties_data["meta"]
 
     click.echo(f"\n  Total properties:       {meta['total_properties']:,}")
@@ -1517,6 +1630,7 @@ def properties(show_status: bool):
     click.echo(f"  With transactions:      {meta['properties_with_transactions']:,}")
     click.echo(f"  With tenants:           {meta['properties_with_tenants']:,}")
     click.echo(f"  ARN disagreements:      {meta['arn_disagreements']:,}")
+    click.echo(f"  ID map:                 {meta['id_map_existing']:,} existing, {meta['id_map_new']:,} new")
     by_source = meta.get("by_source", {})
     for src in sorted(by_source):
         click.echo(f"    {src}: {by_source[src]:,}")
@@ -1549,149 +1663,162 @@ def properties(show_status: bool):
 
 
 @main.command()
-@click.option("--status", "show_status", is_flag=True, help="Show party registry stats.")
-@click.option("--dry-run", is_flag=True, help="Preview what would change without writing.")
-def parties(show_status: bool, dry_run: bool):
-    """Build or update the party group registry.
+@click.option("--status", "show_status", is_flag=True, help="Show group registry stats.")
+def groups(show_status: bool):
+    """Build the group registry from properties data.
 
-    Scans all active parsed records, clusters related companies by
-    normalized name and address using union-find, assigns stable G-IDs,
-    and saves to data/parties.json.
+    Scans all buyer/seller names across all transactions and assigns
+    each unique normalized name a stable GRP_NNNNN ID. The registry
+    is persistent and append-only — IDs survive Data Engine rebuilds.
 
-    Manual overrides (merges, display name overrides) are preserved
-    on rebuild.
+    \b
+    Outputs:
+        data/group_registry.json   — Persistent name → GRP_ mapping
 
     \b
     Examples:
-        cleo parties --status     # Show registry stats
-        cleo parties --dry-run    # Preview without writing
-        cleo parties              # Build/update the registry
+        cleo groups --status   # Show stats
+        cleo groups            # Build/update registry
     """
-    from cleo.config import PARTIES_PATH
-    from cleo.parties.registry import build_registry, save_registry, load_registry
+    import json as _json
+    from cleo.config import PROPERTIES_PATH, GROUP_REGISTRY_PATH
 
     if show_status:
-        reg = load_registry(PARTIES_PATH)
-        meta = reg.get("meta", {})
-        parties_data = reg.get("parties", {})
-        if not parties_data:
-            click.echo("No party registry found. Run 'cleo parties' to build it.")
+        if not GROUP_REGISTRY_PATH.exists():
+            click.echo("No group registry yet. Run 'cleo groups' to build.")
             return
-        click.echo(f"Party registry: {PARTIES_PATH}")
-        click.echo(f"  Built:             {meta.get('built', 'unknown')}")
-        click.echo(f"  Source:            {meta.get('source_dir', 'unknown')}")
-        click.echo(f"  Total groups:      {meta.get('total_groups', len(parties_data)):,}")
-        click.echo(f"  Company groups:    {meta.get('total_company_groups', 0):,}")
-        click.echo(f"  Person groups:     {meta.get('total_person_groups', 0):,}")
-        click.echo(f"  Total appearances: {meta.get('total_appearances', 0):,}")
-        # Top parties by transaction count
-        top = sorted(parties_data.values(), key=lambda p: p.get("transaction_count", 0), reverse=True)[:5]
-        if top:
-            click.echo(f"\n  Top parties:")
-            for p in top:
-                dn = p.get("display_name_override") or p.get("display_name", "")
-                click.echo(f"    {p.get('transaction_count', 0):>4} txns  {dn}")
+        data = _json.loads(GROUP_REGISTRY_PATH.read_text(encoding="utf-8"))
+        meta = data.get("meta", {})
+        click.echo(f"Group registry: {GROUP_REGISTRY_PATH}")
+        click.echo(f"  Created:        {meta.get('created', 'unknown')}")
+        click.echo(f"  Last updated:   {meta.get('last_updated', 'unknown')}")
+        click.echo(f"  Total groups:   {meta.get('total_groups', 0):,}")
+        click.echo(f"  Names indexed:  {len(data.get('name_index', {})):,}")
+        click.echo(f"  Next ID:        GRP_{meta.get('next_id', 0):05d}")
         return
 
-    act = active_dir()
-    if act is None:
-        click.echo("No active parse version. Run 'cleo parse --sandbox' then '--promote' first.", err=True)
+    if not PROPERTIES_PATH.exists():
+        click.echo("No properties.json found. Run 'cleo properties' first.", err=True)
         raise SystemExit(1)
 
-    existing_path = PARTIES_PATH if PARTIES_PATH.exists() else None
-    action = "Updating" if existing_path else "Building"
-    click.echo(f"{action} party registry from {act.name}...")
+    from cleo.groups.registry import build_from_properties
 
-    registry = build_registry(parsed_dir=act, existing_registry_path=existing_path)
-    meta = registry["meta"]
+    click.echo("Building group registry from properties...")
+    registry, stats = build_from_properties(PROPERTIES_PATH, GROUP_REGISTRY_PATH)
 
-    click.echo(f"\n  Total groups:      {meta['total_groups']:,}")
-    click.echo(f"  Company groups:    {meta['total_company_groups']:,}")
-    click.echo(f"  Person groups:     {meta['total_person_groups']:,}")
-    click.echo(f"  Total appearances: {meta['total_appearances']:,}")
-
-    if dry_run:
-        click.echo(f"\nDry run — no changes written.")
-    else:
-        save_registry(registry, PARTIES_PATH)
-        click.echo(f"\nSaved to {PARTIES_PATH}")
+    click.echo(f"\n  Total groups:       {stats['groups_after']:,}")
+    click.echo(f"  New groups:         {stats['new_groups']:,}")
+    click.echo(f"  Names scanned:      {stats['total_names_scanned']:,}")
+    click.echo(f"  Existing names:     {stats['existing_names']:,}")
+    click.echo(f"  New names:          {stats['new_names']:,}")
+    click.echo(f"  Next ID:            GRP_{registry['meta']['next_id']:05d}")
+    click.echo(f"\n  Saved to: {GROUP_REGISTRY_PATH}")
+    click.echo(f"  Done in {stats['elapsed_seconds']:.1f}s")
 
 
-@main.command("auto-confirm")
-@click.option("--dry-run", is_flag=True, help="Preview what would be confirmed without writing.")
-def auto_confirm_cmd(dry_run: bool):
-    """Auto-confirm party names based on high-confidence signals.
+@main.command()
+@click.option("--status", "show_status", is_flag=True, help="Show contact registry stats.")
+def contacts(show_status: bool):
+    """Build the contact registry from properties data.
 
-    Rules applied:
-    1. Single-name groups (the name IS the group — no ambiguity)
-    2. Alias in transaction data matches group display name
-    3. Names sharing a phone number within the group
-    4. Names sharing a contact person within the group
+    Scans all buyer_contact/seller_contact names across all transactions
+    and assigns each unique normalized name a stable CON_NNNNN ID. Tracks
+    group associations with active/former status.
 
-    Rules 3-4 use transitivity: if A shares a phone with B, and B shares
-    a contact with C, all three are confirmed.
+    \b
+    Outputs:
+        data/contact_registry.json   — Persistent name → CON_ mapping
 
     \b
     Examples:
-        cleo auto-confirm --dry-run   # Preview what would be confirmed
-        cleo auto-confirm             # Run auto-confirmation
+        cleo contacts --status   # Show stats
+        cleo contacts            # Build/update registry
     """
-    from cleo.config import PARTIES_PATH
-    from cleo.parties.registry import load_registry, save_registry
-    from cleo.parties.auto_confirm import auto_confirm, apply_auto_confirm
+    import json as _json
+    from cleo.config import PROPERTIES_PATH, CONTACT_REGISTRY_PATH, GROUP_REGISTRY_PATH
 
-    if not PARTIES_PATH.exists():
-        click.echo("No party registry found. Run 'cleo parties' first.", err=True)
+    if show_status:
+        if not CONTACT_REGISTRY_PATH.exists():
+            click.echo("No contact registry yet. Run 'cleo contacts' to build.")
+            return
+        data = _json.loads(CONTACT_REGISTRY_PATH.read_text(encoding="utf-8"))
+        meta = data.get("meta", {})
+        click.echo(f"Contact registry: {CONTACT_REGISTRY_PATH}")
+        click.echo(f"  Created:          {meta.get('created', 'unknown')}")
+        click.echo(f"  Last updated:     {meta.get('last_updated', 'unknown')}")
+        click.echo(f"  Total contacts:   {meta.get('total_contacts', 0):,}")
+        click.echo(f"  Names indexed:    {len(data.get('name_index', {})):,}")
+        click.echo(f"  Next ID:          CON_{meta.get('next_id', 0):05d}")
+
+        total_assocs = sum(
+            len(c.get("group_associations", []))
+            for c in data.get("contacts", {}).values()
+        )
+        multi_group = sum(
+            1 for c in data.get("contacts", {}).values()
+            if len(c.get("group_associations", [])) > 1
+        )
+        click.echo(f"  Group assocs:     {total_assocs:,}")
+        click.echo(f"  Multi-group:      {multi_group:,}")
+        return
+
+    if not PROPERTIES_PATH.exists():
+        click.echo("No properties.json found. Run 'cleo properties' first.", err=True)
         raise SystemExit(1)
 
-    act = active_dir()
-    if act is None:
-        click.echo("No active parse version.", err=True)
+    from cleo.contacts.registry import build_from_properties
+
+    click.echo("Building contact registry from properties...")
+    registry, stats = build_from_properties(PROPERTIES_PATH, CONTACT_REGISTRY_PATH, GROUP_REGISTRY_PATH)
+
+    click.echo(f"\n  Total contacts:     {stats['contacts_after']:,}")
+    click.echo(f"  New contacts:       {stats['new_contacts_added']:,}")
+    click.echo(f"  Contacts scanned:   {stats['total_contacts_scanned']:,}")
+    click.echo(f"  Existing contacts:  {stats['existing_contacts']:,}")
+    click.echo(f"  New names:          {stats['new_contacts']:,}")
+    click.echo(f"  Assoc changes:      {stats['association_changes']:,}")
+    click.echo(f"  Next ID:            CON_{registry['meta']['next_id']:05d}")
+    click.echo(f"\n  Saved to: {CONTACT_REGISTRY_PATH}")
+    click.echo(f"  Done in {stats['elapsed_seconds']:.1f}s")
+
+
+@main.command()
+@click.option("--source", default=None,
+              type=click.Choice(["realtrack", "brand", "osm", "geowarehouse"], case_sensitive=False),
+              help="Filter to a specific source.")
+@click.option("--category", default=None, help="Filter to an address category (e.g. has_number, mall_or_centre).")
+def unresolved(source: str, category: str):
+    """Diagnose unresolved records — why didn't they get a parcel?
+
+    Reads properties_unresolved.json and classifies each record by source,
+    failure reason, and address category. Same data in, same report out.
+    """
+    from cleo.config import PROPERTIES_UNRESOLVED_PATH
+    from cleo.validate.diagnostics import diagnose_unresolved, format_unresolved_report
+
+    if not PROPERTIES_UNRESOLVED_PATH.exists():
+        click.echo("No unresolved data. Run 'cleo properties' first.", err=True)
         raise SystemExit(1)
 
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-    overrides = reg.get("overrides", {})
+    report = diagnose_unresolved(PROPERTIES_UNRESOLVED_PATH)
 
-    # Current stats
-    already = overrides.get("confirmed", {})
-    already_groups = sum(1 for names in already.values() if names)
-    already_names = sum(len(names) for names in already.values())
+    # Apply filters
+    if source or category:
+        filtered = report["records"]
+        if source:
+            filtered = [r for r in filtered if r["source"] == source.lower()]
+        if category:
+            filtered = [r for r in filtered if r["address_category"] == category]
+        # Rebuild counts from filtered records
+        from collections import Counter
+        report["total"] = len(filtered)
+        report["by_source"] = dict(Counter(r["source"] for r in filtered).most_common())
+        report["by_reason"] = dict(Counter(r["reason"] for r in filtered).most_common())
+        report["by_source_reason"] = dict(Counter(f"{r['source']}/{r['reason']}" for r in filtered).most_common())
+        report["by_address_category"] = dict(Counter(r["address_category"] for r in filtered).most_common())
+        report["records"] = filtered
 
-    click.echo(f"Currently confirmed: {already_groups:,} groups, {already_names:,} names")
-    click.echo(f"Scanning {len(parties_data):,} groups against {act.name}...\n")
-
-    confirmations = auto_confirm(parties_data, overrides, act)
-
-    new_groups = len(confirmations)
-    new_names = sum(len(norms) for norms in confirmations.values())
-
-    # Count by rule type for reporting
-    single_name_groups = {gid for gid, p in parties_data.items() if len(p.get("names", [])) == 1}
-    single_count = sum(len(norms) for gid, norms in confirmations.items() if gid in single_name_groups)
-    multi_count = new_names - single_count
-
-    click.echo(f"Auto-confirmable:")
-    click.echo(f"  Single-name groups:    {single_count:,} names")
-    click.echo(f"  Multi-name (evidence): {multi_count:,} names")
-    click.echo(f"  Total new:             {new_names:,} names in {new_groups:,} groups")
-    click.echo(f"  Grand total after:     {already_names + new_names:,} names")
-
-    if dry_run:
-        click.echo(f"\nDry run — no changes written.")
-        # Show some examples
-        multi_examples = [(gid, norms) for gid, norms in confirmations.items() if gid not in single_name_groups]
-        if multi_examples:
-            click.echo(f"\nSample multi-name confirmations:")
-            for gid, norms in multi_examples[:5]:
-                p = parties_data[gid]
-                dn = p.get("display_name_override") or p.get("display_name", "")
-                total_names = len(p.get("names", []))
-                click.echo(f"  {gid} {dn} — {len(norms)}/{total_names} names confirmed")
-    else:
-        count = apply_auto_confirm(reg, confirmations)
-        save_registry(reg, PARTIES_PATH)
-        click.echo(f"\nConfirmed {count:,} names. Saved to {PARTIES_PATH}")
+    click.echo(format_unresolved_report(report))
 
 
 @main.command()
@@ -3027,6 +3154,128 @@ def osm_snapshot_cmd(action: str, skip_fetch: bool, force: bool):
             click.echo("No sandbox to discard.")
 
 
+# ─── Radar POI Harvester ──────────────────────────────────────────
+
+
+@main.command(name="radar-harvest")
+@click.option("--sandbox", "action", flag_value="sandbox", help="Harvest Radar POIs → sandbox.")
+@click.option("--diff", "action", flag_value="diff", help="Compare Radar POI sandbox vs active.")
+@click.option("--promote", "action", flag_value="promote", help="Promote Radar POI sandbox → next version.")
+@click.option("--discard", "action", flag_value="discard", help="Delete Radar POI sandbox.")
+@click.option("--status", "action", flag_value="status", help="Show Radar POI version info.")
+@click.option("--dry-run", is_flag=True, help="Report what would be fetched without calling API.")
+@click.option("--limit-chains", type=int, default=None, help="Limit to first N chains (for testing).")
+def radar_harvest_cmd(action: str, dry_run: bool, limit_chains: int | None):
+    """Harvest branded POIs across Ontario via Radar Places API.
+
+    Fetches all master-brand POI locations from Radar's chain search, deduplicates,
+    and writes one RADAR_{5-digit} record per POI. These enter the pipeline directly
+    at the Parcelled stage (spatial resolution only — like OSM POIs).
+
+    Examples:
+        cleo radar-harvest --sandbox --dry-run       # Preview: chains, cities, requests
+        cleo radar-harvest --sandbox --limit-chains 3 # Test with 3 chains
+        cleo radar-harvest --sandbox                  # Full harvest (~90 chains × 49 cities)
+        cleo radar-harvest --diff                     # Compare sandbox vs active
+        cleo radar-harvest --promote                  # Promote snapshot → next version
+        cleo radar-harvest --status                   # Show version info
+    """
+    from cleo.radar import versioning as radar_ver
+    from cleo.radar.harvester import harvest_all, write_snapshot
+
+    store = radar_ver.store
+
+    if not action:
+        click.echo("Specify one of: --sandbox, --diff, --promote, --discard, --status")
+        raise SystemExit(1)
+
+    if action == "status":
+        ver = store.active_version()
+        versions = store.list_versions()
+        sb_path = store.sandbox_path()
+        has_sandbox = sb_path.is_dir()
+        click.echo(f"Active version:  {ver or '(none)'}")
+        click.echo(f"All versions:    {', '.join(versions) or '(none)'}")
+        if has_sandbox:
+            sb_count = sum(1 for f in sb_path.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Sandbox:         exists ({sb_count:,} records)")
+        else:
+            click.echo(f"Sandbox:         (none)")
+
+    elif action == "sandbox":
+        sb = store.sandbox_path()
+        if sb.exists():
+            import shutil
+            existing = sum(1 for f in sb.glob("*.json") if f.stem != "_meta")
+            click.echo(f"Discarding existing sandbox ({existing:,} records)...")
+            shutil.rmtree(sb)
+
+        result = harvest_all(dry_run=dry_run, limit_chains=limit_chains)
+
+        if dry_run:
+            click.echo(f"\nDry run:")
+            click.echo(f"  Mapped brands:     {result['mapped_brands']}")
+            click.echo(f"  Unmapped brands:   {result['unmapped_brands']}")
+            click.echo(f"  Cities:            {result['cities']}")
+            click.echo(f"  Est. API requests: {result['estimated_requests']:,}")
+            if result.get("unmapped"):
+                click.echo(f"\n  Unmapped: {', '.join(result['unmapped'][:20])}")
+                if len(result['unmapped']) > 20:
+                    click.echo(f"    ... and {len(result['unmapped']) - 20} more")
+            return
+
+        if "error" in result:
+            click.echo(f"Error: {result['error']}")
+            raise SystemExit(1)
+
+        pois = result.get("pois", [])
+        if not pois:
+            click.echo("No POIs harvested.")
+            return
+
+        written = write_snapshot(pois, sb)
+
+        click.echo(f"\nHarvest complete:")
+        click.echo(f"  API requests:    {result['total_requests']:,}")
+        click.echo(f"  Raw results:     {result['total_raw_results']:,}")
+        click.echo(f"  Unique POIs:     {result['unique_pois']:,}")
+        click.echo(f"  Brands found:    {result['brands_with_results']}")
+        click.echo(f"  Unmapped brands: {result['unmapped_brands']}")
+        click.echo(f"  Written:         {written:,} records")
+
+        # Top 10 brands by count
+        brand_counts = result.get("brand_counts", {})
+        if brand_counts:
+            click.echo(f"\n  Top 10 brands:")
+            for name, count in list(brand_counts.items())[:10]:
+                click.echo(f"    {name:30s} {count:5d}")
+
+        click.echo(f"\nNext: cleo radar-harvest --diff / --promote")
+
+    elif action == "diff":
+        diff = store.diff_summary()
+        if not diff:
+            click.echo("No sandbox or no active version to compare.")
+        else:
+            click.echo(f"Added:   {diff.get('added', 0):,}")
+            click.echo(f"Removed: {diff.get('removed', 0):,}")
+            click.echo(f"Changed: {diff.get('changed', 0):,}")
+            click.echo(f"Same:    {diff.get('same', 0):,}")
+
+    elif action == "promote":
+        ver = store.promote()
+        click.echo(f"Promoted to {ver}")
+
+    elif action == "discard":
+        sb = store.sandbox_path()
+        if sb.exists():
+            import shutil
+            shutil.rmtree(sb)
+            click.echo("Sandbox discarded.")
+        else:
+            click.echo("No sandbox to discard.")
+
+
 # ─── OSM Tenant Discovery ─────────────────────────────────────────
 
 
@@ -3779,18 +4028,6 @@ def monitor_cmd(as_json: bool, save_snapshot: bool, stage_filter: str):
     click.echo(f"  Properties       →  {fmt(props.get('total', 0))}")
     click.echo()
 
-    # ── Legacy / Frozen ──
-    legacy = metrics.get("legacy", {})
-    parties = legacy.get("parties", {})
-    if parties and parties.get("total", 0) > 0 and (not stage_filter or stage_filter == "parties"):
-        click.echo(f"{'=' * 60}")
-        click.echo(f"  LEGACY / FROZEN")
-        click.echo(f"{'=' * 60}")
-        click.echo(f"  Parties (frozen — will be rebuilt as read-only view on clean data)")
-        click.echo(f"    Groups:          {fmt(parties.get('total', 0))}  ({fmt(parties.get('companies', 0))} companies, {fmt(parties.get('persons', 0))} persons)")
-        click.echo(f"    Appearances:     {fmt(parties.get('total_appearances', 0))}")
-        click.echo(f"    RT IDs linked:   {fmt(parties.get('total_rt_ids_linked', 0))}")
-        click.echo()
 
 
 @main.command(name="discover-types")

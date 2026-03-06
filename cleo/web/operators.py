@@ -13,7 +13,6 @@ from cleo.config import (
     OPERATORS_CONFIG_PATH,
     OPERATORS_CRAWL_DIR,
     PROPERTIES_PATH,
-    PARTIES_PATH,
 )
 from cleo.operators.registry import (
     load_registry,
@@ -38,10 +37,8 @@ def _load_properties() -> dict:
 
 
 def _load_parties() -> dict:
-    if not PARTIES_PATH.exists():
-        return {}
-    raw = json.loads(PARTIES_PATH.read_text(encoding="utf-8"))
-    return raw.get("parties", {})
+    """Stub — legacy party registry removed. Returns empty dict."""
+    return {}
 
 
 # ---------------------------------------------------------------------------

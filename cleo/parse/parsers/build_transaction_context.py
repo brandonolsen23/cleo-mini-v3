@@ -70,6 +70,7 @@ class TransactionHeader:
     sale_date_iso: str = ""
     sale_price: str = ""
     sale_price_raw: str = ""
+    transaction_type: str = ""
     rt_number: str = ""
     arn: str = ""
     pins: List[str] = field(default_factory=list)
@@ -81,6 +82,7 @@ class TransactionHeader:
             "sale_date_iso": self.sale_date_iso,
             "sale_price": self.sale_price,
             "sale_price_raw": self.sale_price_raw,
+            "transaction_type": self.transaction_type,
             "rt_number": self.rt_number,
             "arn": self.arn,
             "pins": self.pins,
@@ -181,6 +183,7 @@ class TransactionContext:
     skip_index: int = 0
     html_path: str = ""
     ingest_timestamp: str = ""
+    property_type: str = ""
     
     transaction: TransactionHeader = field(default_factory=TransactionHeader)
     transferor: PartyInfo = field(default_factory=PartyInfo)
@@ -198,6 +201,7 @@ class TransactionContext:
             "skip_index": self.skip_index,
             "html_path": self.html_path,
             "ingest_timestamp": self.ingest_timestamp,
+            "property_type": self.property_type,
             "transaction": self.transaction.to_dict(),
             "transferor": self.transferor.to_dict(),
             "transferee": self.transferee.to_dict(),
@@ -336,11 +340,22 @@ def build_transaction_context(
     if ingest_timestamp is None:
         ingest_timestamp = datetime.now().isoformat()
     
+    # Extract property type from html_path directory structure
+    # e.g. "data/html/industrial/RT43746.html" → "industrial"
+    _property_type = ""
+    if html_path:
+        _path_parts = Path(html_path).parts
+        for i, part in enumerate(_path_parts):
+            if part == "html" and i + 1 < len(_path_parts) - 1:
+                _property_type = _path_parts[i + 1]
+                break
+
     ctx = TransactionContext(
         rt_id=rt_id,
         skip_index=skip_index,
         html_path=html_path,
         ingest_timestamp=ingest_timestamp,
+        property_type=_property_type,
     )
     
     # === Transaction Header ===
@@ -378,13 +393,14 @@ def build_transaction_context(
     if isinstance(address_block, dict):
         ctx.transaction.address.postal_code = address_block.get("PostalCode", "")
     
-    # Sale date and price
+    # Sale date, price, and transaction type
     sale_details = parse_sale_date_and_price(soup)
     if isinstance(sale_details, dict):
         ctx.transaction.sale_date = sale_details.get("SaleDate", "")
         ctx.transaction.sale_date_iso = sale_details.get("SaleDateISO", "")
         ctx.transaction.sale_price = sale_details.get("SalePrice", "")
         ctx.transaction.sale_price_raw = sale_details.get("SalePrice", "")
+        ctx.transaction.transaction_type = sale_details.get("TransactionType", "")
     
     # RT Number
     rt_data = parse_rt(soup)

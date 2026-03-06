@@ -352,6 +352,7 @@ def resolve_all(
     skip_api: bool = False,
     resume: bool = False,
     osm_pois_dir: Optional[Path] = None,
+    radar_pois_dir: Optional[Path] = None,
 ) -> Dict:
     """Resolve parcels for all records from all sources.
 
@@ -577,6 +578,85 @@ def resolve_all(
                     errors += 1
                     error_ids.append(record_id)
                     logger.error("Error resolving OSM %s: %s", record_id, e)
+
+                if processed % 500 == 0 and processed > 0:
+                    elapsed_so_far = time.time() - start
+                    rate = processed / elapsed_so_far if elapsed_so_far > 0 else 0
+                    remaining = total - skipped - processed - errors
+                    eta_s = remaining / rate if rate > 0 else 0
+                    logger.info(
+                        "Progress: %d/%d processed (%d skipped, %d resolved, %d unresolved, %d errors) "
+                        "%.1f rec/s, ~%.0f min remaining",
+                        processed, total - skipped, skipped, resolved, unresolved, errors,
+                        rate, eta_s / 60,
+                    )
+                    resolver.save_cache()
+
+        # --- Process Radar POI records (if available) ---
+        if radar_pois_dir and radar_pois_dir.exists() and not _shutdown_requested:
+            radar_files = sorted(radar_pois_dir.glob("*.json"))
+            radar_count = sum(1 for f in radar_files if f.stem != "_meta")
+            if radar_count:
+                logger.info("Processing %d Radar POI records...", radar_count)
+            for radar_path in radar_files:
+                if radar_path.stem == "_meta":
+                    continue
+                total += 1
+                record_id = radar_path.stem
+
+                if record_id in existing_ids:
+                    skipped += 1
+                    continue
+
+                if _shutdown_requested:
+                    logger.info("Shutdown requested — stopping after %d processed records", processed)
+                    break
+
+                try:
+                    radar_rec = json.loads(radar_path.read_text(encoding="utf-8"))
+
+                    # Radar records have native coords, no ARN/PIN
+                    coords = radar_rec.get("coords")
+                    ident: Dict[str, Any] = {
+                        "arn_raw": "",
+                        "arn_20": "",
+                        "pins": [],
+                        "coords": coords,
+                    }
+
+                    try:
+                        resolution = _resolve_record(ident, resolver)
+                    except TokenExpiredError:
+                        logger.warning("Token expired at Radar record %s. Refreshing...", record_id)
+                        resolver.save_cache()
+                        token = _fetch_fresh_token()
+                        token_refreshes += 1
+                        resolver = _make_resolver(False, token)
+                        resolution = _resolve_record(ident, resolver)
+
+                    output = _build_output(
+                        record_id, "radar", source_version, ident, resolution,
+                    )
+                    out_path = output_dir / f"{record_id}.json"
+                    out_path.write_text(
+                        json.dumps(output, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+
+                    processed += 1
+                    method = resolution["method"]
+                    by_method[method] = by_method.get(method, 0) + 1
+                    by_source["radar"] = by_source.get("radar", 0) + 1
+
+                    if method != "none":
+                        resolved += 1
+                    else:
+                        unresolved += 1
+
+                except Exception as e:
+                    errors += 1
+                    error_ids.append(record_id)
+                    logger.error("Error resolving Radar %s: %s", record_id, e)
 
                 if processed % 500 == 0 and processed > 0:
                     elapsed_so_far = time.time() - start

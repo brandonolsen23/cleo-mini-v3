@@ -8,7 +8,7 @@ import json
 import logging
 from pathlib import Path
 
-from cleo.config import PROPERTIES_PATH, PARTIES_PATH
+from cleo.config import PROPERTIES_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,8 @@ def _load_properties() -> dict:
 
 
 def _load_parties() -> dict:
-    if not PARTIES_PATH.exists():
-        return {}
-    raw = json.loads(PARTIES_PATH.read_text(encoding="utf-8"))
-    return raw.get("parties", {})
+    """Stub — legacy party registry removed. Returns empty dict."""
+    return {}
 
 
 def match_properties(extracted_properties: list[dict], properties: dict) -> list[dict]:
@@ -117,7 +115,7 @@ def match_parties(
 
     Returns list of match dicts.
     """
-    from cleo.parties.normalize import normalize_name
+    from cleo.utils.text import normalize_name
 
     matches = []
     seen_gids: set[str] = set()

@@ -161,7 +161,7 @@ def _normalize_gw_record(data: Dict) -> Dict:
     (if available in site_structure.owner_mailing_address).
     Also extracts C/O and ATTN names, classifying them as person or company.
     """
-    from cleo.parties.registry import _is_company_name
+    from cleo.utils.text import is_company_name as _is_company_name
 
     ss = data.get("site_structure", {})
     summary = data.get("summary", {})

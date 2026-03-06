@@ -12,22 +12,22 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, PARTIES_PATH, PARTY_EDITS_PATH, KEYWORDS_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, CRM_DEALS_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH, NORMALIZED_DIR, NORM_REVIEWS_PATH, EXPANDED_DIR, EXPAND_REVIEWS_PATH, PARCEL_REGISTRY_PATH, PARCELLED_DIR, PARCELLED_REVIEWS_PATH, COMPILED_DIR, COMPILED_REVIEWS_PATH, OSM_POIS_DIR, PARCEL_CACHE_PATH
+from cleo.config import HTML_DIR, PARSED_DIR, DATA_DIR, EXTRACT_REVIEWS_PATH, GEOCODE_CACHE_PATH, PROPERTIES_PATH, PROPERTY_EDITS_PATH, FEEDBACK_PATH, BRAND_MATCHES_PATH, BRANDS_DATA_DIR, MARKETS_PATH, GW_PARSED_DIR, OPERATORS_REGISTRY_PATH, PARCELS_PATH, PARCELS_MATCHES_PATH, NORMALIZED_DIR, NORM_REVIEWS_PATH, EXPANDED_DIR, EXPAND_REVIEWS_PATH, PARCEL_REGISTRY_PATH, PARCELLED_DIR, PARCELLED_REVIEWS_PATH, COMPILED_DIR, COMPILED_REVIEWS_PATH, OSM_POIS_DIR, PARCEL_CACHE_PATH
 from cleo.ingest.html_index import HtmlIndex
-from cleo.parse.versioning import active_dir, active_version, sandbox_path, sandbox_exists, list_versions, VOLATILE_FIELDS
+from cleo.parse.versioning import active_dir, active_version, sandbox_path, sandbox_exists, list_versions, VOLATILE_FIELDS, _store as _parse_store
 from cleo.extract import versioning as extract_ver
-from cleo.web.crm import router as crm_router
 from cleo.web.operators import router as operators_router
-from cleo.web.outreach import router as outreach_router
-from cleo.web.owners import router as owners_router
 from cleo.web.issues import router as issues_router
+from cleo.web.groups import router as groups_router
+from cleo.web.contacts import router as contacts_router
+from cleo.web.crm import router as crm_router
 
 app = FastAPI(title="Cleo Review")
-app.include_router(crm_router)
 app.include_router(operators_router)
-app.include_router(outreach_router)
-app.include_router(owners_router)
 app.include_router(issues_router)
+app.include_router(groups_router)
+app.include_router(contacts_router)
+app.include_router(crm_router)
 
 
 @app.on_event("startup")
@@ -66,21 +66,6 @@ def legacy_review():
 def pipeline():
     from fastapi.responses import HTMLResponse as HR
     content = (STATIC_DIR / "pipeline.html").read_text(encoding="utf-8")
-    return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
-
-
-@app.get("/party-review", response_class=HTMLResponse)
-def party_review():
-    from fastapi.responses import HTMLResponse as HR
-    content = (STATIC_DIR / "party_review.html").read_text(encoding="utf-8")
-    return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
-
-
-@app.get("/api/party-review-page", response_class=HTMLResponse)
-def party_review_page():
-    """Alias under /api/ so the React app can link here without Vite intercepting."""
-    from fastapi.responses import HTMLResponse as HR
-    content = (STATIC_DIR / "party_review.html").read_text(encoding="utf-8")
     return HR(content=content, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
@@ -1320,6 +1305,73 @@ def _load_parcel_cache() -> dict | None:
     return _ParcelCacheStore.data
 
 
+def _resolve_group_for_parcel(
+    arn: str,
+    owner_name: str,
+    group_name_index: dict,
+    group_records: dict,
+    manual_links_by_arn: dict,
+) -> tuple:
+    """Resolve group_id and group_name for a parcel.
+
+    Priority: manual link > transaction-derived owner.
+    Returns (group_id, group_name).
+    """
+    # Manual link takes priority
+    manual = manual_links_by_arn.get(arn)
+    if manual:
+        gid = manual["group_id"]
+        grp = group_records.get(gid, {})
+        name = grp.get("display_name") or (grp.get("known_names") or [""])[0]
+        return gid, name
+
+    # Fall back to owner name → group lookup
+    if owner_name:
+        from cleo.groups.registry import normalize_group_name
+        norm = normalize_group_name(owner_name)
+        gid = group_name_index.get(norm, "")
+        if gid:
+            grp = group_records.get(gid, {})
+            name = grp.get("display_name") or owner_name
+            return gid, name
+
+    return "", ""
+
+
+class _GroupLookupCache:
+    """Mtime-based cache for group registry + property links used in parcel bbox."""
+    name_index: dict = {}
+    groups: dict = {}
+    links_by_arn: dict = {}
+    _reg_mtime: float = 0
+    _links_mtime: float = 0
+
+    @classmethod
+    def load(cls):
+        from cleo.config import GROUP_REGISTRY_PATH, GROUP_PROPERTY_LINKS_PATH
+        import json
+
+        reg_path = GROUP_REGISTRY_PATH
+        links_path = GROUP_PROPERTY_LINKS_PATH
+
+        reg_changed = reg_path.exists() and reg_path.stat().st_mtime != cls._reg_mtime
+        links_changed = links_path.exists() and links_path.stat().st_mtime != cls._links_mtime
+
+        if reg_changed or not cls.name_index:
+            data = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.exists() else {}
+            cls.name_index = data.get("name_index", {})
+            cls.groups = data.get("groups", {})
+            cls._reg_mtime = reg_path.stat().st_mtime if reg_path.exists() else 0
+
+        if links_changed or not cls.links_by_arn:
+            if links_path.exists():
+                links = json.loads(links_path.read_text(encoding="utf-8"))
+                cls.links_by_arn = {l["arn"]: l for l in links}
+                cls._links_mtime = links_path.stat().st_mtime
+            else:
+                cls.links_by_arn = {}
+
+
 @app.get("/api/parcels/cache/bbox")
 def api_parcels_cache_bbox(
     south: float, west: float, north: float, east: float
@@ -1333,6 +1385,10 @@ def api_parcels_cache_bbox(
     props_data = _load_properties()
     properties = props_data.get("properties", {}) if props_data else {}
     brand_info = _load_brand_info()
+
+    # Load group lookup data for resolving owner → group
+    _GroupLookupCache.load()
+
     features = []
 
     for arn, parcel in parcels.items():
@@ -1352,6 +1408,15 @@ def api_parcels_cache_bbox(
         tenant_names, tenant_cat_list, categories = _resolve_tenants(prop, brand_info)
         latest = prop.get("latest_transaction") or {}
         owner = prop.get("current_owner") or {}
+        owner_name = owner.get("name", "")
+
+        # Resolve group
+        group_id, group_name = _resolve_group_for_parcel(
+            arn, owner_name,
+            _GroupLookupCache.name_index,
+            _GroupLookupCache.groups,
+            _GroupLookupCache.links_by_arn,
+        )
 
         # First photo from latest transaction (if any)
         photo = ""
@@ -1370,7 +1435,9 @@ def api_parcels_cache_bbox(
                 "property_id": pid,
                 "address": prop.get("primary_address", ""),
                 "city": prop.get("city", ""),
-                "owner": owner.get("name", ""),
+                "owner": owner_name,
+                "group_id": group_id,
+                "group_name": group_name,
                 "latest_price": latest.get("sale_price"),
                 "latest_date": latest.get("sale_date", ""),
                 "tenants": tenant_names,
@@ -1457,9 +1524,10 @@ def api_status():
 
 @app.get("/api/rt-ids")
 def api_rt_ids():
-    """List all RT IDs with their flags."""
+    """List all RT IDs with their flags and property type."""
     html_flags = _load_json(DATA_DIR / "html_flags.json")
     parse_flags = _load_json(DATA_DIR / "parse_flags.json")
+    seen = _load_json(DATA_DIR / "seen_rt_ids.json")
 
     act = active_dir()
     if act is None:
@@ -1483,6 +1551,7 @@ def api_rt_ids():
             "flagged": bool(h or p),
             "reviewed": reviewed,
             "determination": reviews.get(rt_id, {}).get("determination", ""),
+            "property_type": (seen.get(rt_id) or {}).get("type", ""),
         })
 
     return records
@@ -1571,28 +1640,6 @@ def _operators_for_prop(prop_id: str) -> list[dict]:
     except Exception:
         return []
 
-
-def _operators_for_party(group_id: str) -> list[dict]:
-    """Return linked operators for a party group (confirmed matches)."""
-    if not OPERATORS_REGISTRY_PATH.exists():
-        return []
-    try:
-        from cleo.operators.registry import load_registry as load_op_reg
-        reg = load_op_reg()
-        result = []
-        for op_id, op in reg.get("operators", {}).items():
-            for m in op.get("party_matches", []):
-                if m.get("group_id") == group_id and m.get("status") == "confirmed":
-                    result.append({
-                        "op_id": op_id,
-                        "name": op.get("name", ""),
-                        "slug": op.get("slug", ""),
-                        "url": op.get("url", ""),
-                    })
-                    break
-        return result
-    except Exception:
-        return []
 
 
 def _build_rt_to_brands(properties: dict) -> dict[str, list[str]]:
@@ -1774,59 +1821,13 @@ def _calculate_ppsf(sale_price: str, building_sf: str) -> str | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Party name -> group_id reverse index (cached)
-# ---------------------------------------------------------------------------
-
-_name_to_gid_cache: dict[str, str] | None = None
-_name_to_gid_mtime: float = 0.0
-
-
-def _get_name_to_gid() -> dict[str, str]:
-    """Return a cached name -> group_id reverse index from the party registry."""
-    global _name_to_gid_cache, _name_to_gid_mtime
-
-    if not PARTIES_PATH.exists():
-        return {}
-
-    mtime = PARTIES_PATH.stat().st_mtime
-    if _name_to_gid_cache is not None and _name_to_gid_mtime == mtime:
-        return _name_to_gid_cache
-
-    from cleo.parties.registry import load_registry as load_party_registry
-    reg = load_party_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    idx: dict[str, str] = {}
-    for gid, p in parties_data.items():
-        for name in p.get("normalized_names", []):
-            idx[name] = gid
-        for name in p.get("names", []):
-            idx[name.upper().strip()] = gid
-    _name_to_gid_cache = idx
-    _name_to_gid_mtime = mtime
-    return idx
-
-
-def _lookup_group_id(party_name: str) -> str | None:
-    """Look up the party group_id for a given name string."""
-    if not party_name:
-        return None
-    idx = _get_name_to_gid()
-    # Try uppercase match (matches the raw names index)
-    gid = idx.get(party_name.upper().strip())
-    if gid:
-        return gid
-    # Try normalized match
-    from cleo.parties.normalize import normalize_name
-    return idx.get(normalize_name(party_name))
 
 
 def _make_contact_id(contact_name: str) -> str | None:
     """Return normalized contact_id for a contact person name, or None."""
     if not contact_name or not contact_name.strip():
         return None
-    from cleo.parties.normalize import normalize_contact
+    from cleo.utils.text import normalize_contact
     return normalize_contact(contact_name)
 
 
@@ -1879,8 +1880,6 @@ def api_transactions():
             "sale_date_iso": tx.get("sale_date_iso", ""),
             "seller": data.get("transferor", {}).get("name", ""),
             "buyer": data.get("transferee", {}).get("name", ""),
-            "seller_group_id": _lookup_group_id(data.get("transferor", {}).get("name", "")),
-            "buyer_group_id": _lookup_group_id(data.get("transferee", {}).get("name", "")),
             "building_sf": data.get("export_extras", {}).get("building_sf", ""),
             "site_area": data.get("site", {}).get("site_area", ""),
             "ppsf": _calculate_ppsf(tx.get("sale_price", ""), data.get("export_extras", {}).get("building_sf", "")),
@@ -1909,8 +1908,7 @@ def _build_contacts_index() -> list[dict]:
     differs from ``contact`` and looks like a person name (not a company), it
     is indexed as a separate contact entry.
     """
-    from cleo.parties.normalize import normalize_contact
-    from cleo.parties.registry import _is_company_name
+    from cleo.utils.text import normalize_contact, is_company_name
 
     act = active_dir()
     if act is None:
@@ -2016,7 +2014,7 @@ def _build_contacts_index() -> list[dict]:
                     if ncid and ncid not in seen_cids:
                         seen_cids.add(ncid)
                         names_to_index.append(contact_raw)
-                if attention_raw and not _is_company_name(attention_raw):
+                if attention_raw and not is_company_name(attention_raw):
                     ncid = normalize_contact(attention_raw)
                     if ncid and ncid not in seen_cids:
                         seen_cids.add(ncid)
@@ -2087,7 +2085,7 @@ def api_contacts():
 @app.get("/api/contacts/{contact_id:path}")
 def api_contact_detail(contact_id: str):
     """Return full detail for a single contact."""
-    from cleo.parties.normalize import normalize_contact
+    from cleo.utils.text import normalize_contact
     from urllib.parse import unquote
 
     contact_id = unquote(contact_id).strip()
@@ -2116,7 +2114,7 @@ def api_contact_detail(contact_id: str):
 
     # Build full appearances by re-scanning (we need full data)
     from collections import Counter
-    from cleo.parties.registry import _is_company_name
+    from cleo.utils.text import is_company_name
     raw_names: Counter = Counter()
     phones: set = set()
     addresses: set = set()
@@ -2156,7 +2154,7 @@ def api_contact_detail(contact_id: str):
                 attention_raw = (party.get("attention") or "").strip()
                 if contact_raw and normalize_contact(contact_raw) == cid:
                     matched_name = contact_raw
-                elif attention_raw and normalize_contact(attention_raw) == cid and not _is_company_name(attention_raw):
+                elif attention_raw and normalize_contact(attention_raw) == cid and not is_company_name(attention_raw):
                     matched_name = attention_raw
 
             if not matched_name:
@@ -2199,23 +2197,7 @@ def api_contact_detail(contact_id: str):
     sorted_dates = sorted(d for d in dates if d)
     sorted_entities = sorted(entities)
 
-    # Cross-reference party registry
     party_groups: list[dict] = []
-    if PARTIES_PATH.exists():
-        from cleo.parties.registry import load_registry as load_party_registry
-        reg = load_party_registry(PARTIES_PATH)
-        parties_data = reg.get("parties", {})
-
-        # Find groups containing any of the contact's entities
-        entity_norms = {e.upper().strip() for e in entities}
-        for gid, p in parties_data.items():
-            group_norms = {n.upper().strip() for n in p.get("names", [])}
-            if entity_norms & group_norms:
-                party_groups.append({
-                    "group_id": gid,
-                    "display_name": p.get("display_name_override") or p.get("display_name", ""),
-                    "transaction_count": p.get("transaction_count", 0),
-                })
 
     return {
         "contact_id": cid,
@@ -2250,48 +2232,9 @@ def _get_gw_active_dir():
 _properties_cache: list | None = None
 _properties_cache_mtime: float = 0
 
-_DEAL_STAGE_PRIORITY = {
-    "active_deal": 0,
-    "in_negotiation": 1,
-    "under_contract": 2,
-    # legacy stages treated as active
-    "qualifying": 0,
-    "negotiating": 1,
-    "lead": 0,
-    "contacted": 0,
-}
-_DEAL_CLOSED_STAGES = {"closed_won", "lost_cancelled", "closed_lost"}
-
-
 def _build_prop_deal_stage_lookup() -> dict[str, str]:
-    """Scan deals and return {prop_id: best_deal_stage}.
-
-    Priority: active (non-closed) deals first (by pipeline order),
-    then closed deals.
-    """
-    if not CRM_DEALS_PATH.exists():
-        return {}
-    deals = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8")).get("deals", {})
-    result: dict[str, str] = {}
-    for _did, d in deals.items():
-        pid = d.get("prop_id", "")
-        stage = d.get("stage", "")
-        if not pid or not stage:
-            continue
-        existing = result.get(pid)
-        if existing is None:
-            result[pid] = stage
-            continue
-        # Active beats closed
-        existing_closed = existing in _DEAL_CLOSED_STAGES
-        new_closed = stage in _DEAL_CLOSED_STAGES
-        if existing_closed and not new_closed:
-            result[pid] = stage
-        elif not existing_closed and not new_closed:
-            # Both active — prefer higher priority (lower number)
-            if _DEAL_STAGE_PRIORITY.get(stage, 99) < _DEAL_STAGE_PRIORITY.get(existing, 99):
-                result[pid] = stage
-    return result
+    """Stub — legacy CRM deals removed. Will be rebuilt with anchor layer."""
+    return {}
 
 
 def _derive_pin_status(pipeline_status: str, deal_stage: str | None) -> str:
@@ -2473,8 +2416,6 @@ def api_property_detail(prop_id: str):
                 "sale_date_iso": tx.get("sale_date_iso", ""),
                 "seller": data.get("transferor", {}).get("name", ""),
                 "buyer": data.get("transferee", {}).get("name", ""),
-                "seller_group_id": _lookup_group_id(data.get("transferor", {}).get("name", "")),
-                "buyer_group_id": _lookup_group_id(data.get("transferee", {}).get("name", "")),
                 "buyer_contact": data.get("transferee", {}).get("contact", ""),
                 "buyer_contact_id": _make_contact_id(data.get("transferee", {}).get("contact", "")),
                 "buyer_phone": data.get("transferee", {}).get("phone", ""),
@@ -2817,1468 +2758,6 @@ def api_property_tenants(prop_id: str):
     }
 
 
-# ---------------------------------------------------------------------------
-# Parties (front-facing app)
-# ---------------------------------------------------------------------------
-
-_parties_cache: list | None = None
-_parties_cache_mtime: float = 0
-
-
-@app.get("/api/parties/known-attributes")
-def api_known_attributes():
-    """Return attribute-to-group-name lookup for all confirmed party groups.
-
-    Only groups with at least one confirmed name are included.
-    Used by the evidence drawer to tag known contacts, phones, and addresses.
-    """
-    if not PARTIES_PATH.exists():
-        return {"phones": {}, "contacts": {}, "addresses": {}}
-
-    from cleo.parties.registry import load_registry
-    from cleo.parties.suggestions import build_known_attributes
-
-    reg = load_registry(PARTIES_PATH)
-    mtime = PARTIES_PATH.stat().st_mtime
-    return build_known_attributes(reg.get("parties", {}), reg.get("overrides", {}), mtime)
-
-
-@app.get("/api/parties")
-def api_parties():
-    """Return party groups as a summary array for the front-facing app."""
-    global _parties_cache, _parties_cache_mtime
-
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    mtime = PARTIES_PATH.stat().st_mtime
-    if _parties_cache is not None and _parties_cache_mtime == mtime:
-        return JSONResponse(_parties_cache)
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-    overrides = reg.get("overrides", {})
-    dn_overrides = overrides.get("display_name", {})
-
-    records = []
-    for gid, p in parties_data.items():
-        names = p.get("names", [])
-        contacts = p.get("contacts", [])
-        phones = p.get("phones", [])
-
-        # Compute current ownership: for each property, check if the
-        # most recent transaction was a buy (meaning they still own it)
-        prop_latest: dict[str, tuple[str, str]] = {}  # (addr,city) -> (date, role)
-        for app in p.get("appearances", []):
-            addr = (app.get("prop_address") or "").upper().strip()
-            city = (app.get("prop_city") or "").upper().strip()
-            if not addr:
-                continue
-            key = (addr, city)
-            d = app.get("sale_date_iso", "")
-            prev = prop_latest.get(key)
-            if prev is None or d > prev[0]:
-                prop_latest[key] = (d, app.get("role", ""))
-        owns_count = sum(1 for _, role in prop_latest.values() if role == "buyer")
-
-        # Build search text from all party data
-        search_parts = [gid]
-        search_parts.extend(names)
-        search_parts.extend(contacts)
-        search_parts.extend(phones)
-        search_parts.extend(p.get("addresses", []))
-        search_parts.extend(p.get("aliases", []))
-        search_parts.extend(p.get("alternate_names", []))
-        dn = p.get("display_name_override") or p.get("display_name", "")
-        if dn:
-            search_parts.append(dn)
-        party_search_text = " ".join(s for s in search_parts if s).lower()
-
-        records.append({
-            "group_id": gid,
-            "display_name": dn,
-            "is_company": p.get("is_company", True),
-            "names_count": len(names),
-            "names": names[:3],
-            "addresses_count": len(p.get("addresses", [])),
-            "transaction_count": p.get("transaction_count", 0),
-            "buy_count": p.get("buy_count", 0),
-            "sell_count": p.get("sell_count", 0),
-            "owns_count": owns_count,
-            "contacts": contacts[:2],
-            "phones": phones[:1],
-            "first_active_iso": p.get("first_active_iso", ""),
-            "last_active_iso": p.get("last_active_iso", ""),
-            "has_override": gid in dn_overrides,
-            "_search_text": party_search_text,
-        })
-
-    _parties_cache = records
-    _parties_cache_mtime = mtime
-    return JSONResponse(records)
-
-
-@app.get("/api/parties/{group_id}")
-def api_party_detail(group_id: str):
-    """Return full detail for a single party group."""
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    p = parties_data[group_id]
-
-    # Enrich appearances with property address/city and photos
-    act = active_dir()
-    enriched_appearances = []
-    for app in p.get("appearances", []):
-        entry = dict(app)
-        # Add photo info from parsed data
-        if act:
-            f = act / f"{app['rt_id']}.json"
-            if f.exists():
-                data = json.loads(f.read_text(encoding="utf-8"))
-                entry["photos"] = data.get("photos", [])
-            else:
-                entry["photos"] = []
-        else:
-            entry["photos"] = []
-        enriched_appearances.append(entry)
-
-    # Cross-reference linked properties
-    linked_properties = []
-    if PROPERTIES_PATH.exists():
-        from cleo.properties.registry import load_registry as load_prop_registry
-        prop_reg = load_prop_registry(PROPERTIES_PATH)
-        props = prop_reg.get("properties", {})
-        party_rt_ids = set(p.get("rt_ids", []))
-        for pid, prop in props.items():
-            prop_rt_ids = set(prop.get("rt_ids", []))
-            if party_rt_ids & prop_rt_ids:
-                linked_properties.append({
-                    "prop_id": pid,
-                    "address": prop.get("address", ""),
-                    "city": prop.get("city", ""),
-                    "transaction_count": prop.get("transaction_count", 0),
-                })
-
-    overrides = reg.get("overrides", {})
-    url_overrides = overrides.get("url", {})
-    confirmed = overrides.get("confirmed", {}).get(group_id, [])
-
-    return {
-        "group_id": group_id,
-        "display_name": p.get("display_name_override") or p.get("display_name", ""),
-        "display_name_auto": p.get("display_name", ""),
-        "display_name_override": p.get("display_name_override", ""),
-        "url": url_overrides.get(group_id, ""),
-        "is_company": p.get("is_company", True),
-        "names": p.get("names", []),
-        "normalized_names": p.get("normalized_names", []),
-        "addresses": p.get("addresses", []),
-        "contacts": p.get("contacts", []),
-        "phones": p.get("phones", []),
-        "aliases": p.get("aliases", []),
-        "alternate_names": p.get("alternate_names", []),
-        "appearances": enriched_appearances,
-        "transaction_count": p.get("transaction_count", 0),
-        "buy_count": p.get("buy_count", 0),
-        "sell_count": p.get("sell_count", 0),
-        "first_active_iso": p.get("first_active_iso", ""),
-        "last_active_iso": p.get("last_active_iso", ""),
-        "rt_ids": p.get("rt_ids", []),
-        "created": p.get("created", ""),
-        "updated": p.get("updated", ""),
-        "linked_properties": linked_properties,
-        "confirmed_names": confirmed,
-        "linked_operators": _operators_for_party(group_id),
-    }
-
-
-@app.post("/api/parties/{group_id}")
-async def api_save_party_overrides(group_id: str, request: Request):
-    """Save overrides for a party group.
-
-    Body: {
-        "display_name": "Choice Properties",
-        "url": "https://www.choicereit.ca"
-    }
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry
-
-    body = await request.json()
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    overrides = reg.setdefault("overrides", {})
-    dn_overrides = overrides.setdefault("display_name", {})
-    url_overrides = overrides.setdefault("url", {})
-
-    # Display name override
-    display_name = (body.get("display_name") or "").strip()
-    if display_name:
-        dn_overrides[group_id] = display_name
-        parties_data[group_id]["display_name_override"] = display_name
-    else:
-        dn_overrides.pop(group_id, None)
-        parties_data[group_id]["display_name_override"] = ""
-
-    # URL override
-    url = (body.get("url") or "").strip()
-    if url:
-        url_overrides[group_id] = url
-    else:
-        url_overrides.pop(group_id, None)
-
-    parties_data[group_id]["updated"] = datetime.now().strftime("%Y-%m-%d")
-
-    save_registry(reg, PARTIES_PATH)
-    _parties_cache = None  # bust cache
-
-    return {"status": "saved", "group_id": group_id}
-
-
-@app.post("/api/parties/{group_id}/disconnect")
-async def api_party_disconnect(group_id: str, request: Request):
-    """Disconnect a name from a party group, moving it to a new or existing group.
-
-    Body: {
-        "name": "1873280 Ontario Inc",
-        "target_group": "",   // empty = create new group
-        "reason": "Different parent company"
-    }
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry
-    from cleo.parties.normalize import normalize_name
-
-    body = await request.json()
-    name = (body.get("name") or "").strip()
-    target_group = (body.get("target_group") or "").strip()
-    reason = (body.get("reason") or "").strip()
-
-    if not name:
-        raise HTTPException(400, "name is required")
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    source = parties_data[group_id]
-    norm_name = normalize_name(name)
-
-    # Find matching appearances
-    matching = [a for a in source["appearances"] if normalize_name(a["name"]) == norm_name]
-    if not matching:
-        raise HTTPException(400, f"Name not found in group: {name}")
-
-    remaining = [a for a in source["appearances"] if normalize_name(a["name"]) != norm_name]
-
-    if not remaining:
-        raise HTTPException(400, "Cannot disconnect the only name in a group")
-
-    # Determine target group
-    if target_group and target_group in parties_data:
-        tgt_gid = target_group
-    else:
-        # Create new group ID
-        max_num = 0
-        for gid in parties_data:
-            if gid.startswith("G") and gid[1:].isdigit():
-                max_num = max(max_num, int(gid[1:]))
-        tgt_gid = f"G{max_num + 1:05d}"
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    # Update source group — remove the name's appearances
-    source["appearances"] = remaining
-    source["names"] = sorted(set(a["name"] for a in remaining))
-    source["normalized_names"] = sorted(set(normalize_name(a["name"]) for a in remaining))
-    source["rt_ids"] = sorted(set(a["rt_id"] for a in remaining))
-    source["transaction_count"] = len(source["rt_ids"])
-    source["buy_count"] = sum(1 for a in remaining if a["role"] == "buyer")
-    source["sell_count"] = sum(1 for a in remaining if a["role"] == "seller")
-    dates = [a["sale_date_iso"] for a in remaining if a.get("sale_date_iso")]
-    source["first_active_iso"] = min(dates) if dates else ""
-    source["last_active_iso"] = max(dates) if dates else ""
-    # Recompute addresses/contacts/phones from remaining appearances
-    source["addresses"] = sorted(set(a.get("address", "") or "" for a in remaining if (a.get("address") or "").strip()))
-    source["contacts"] = sorted(set(a.get("contact", "") or "" for a in remaining if (a.get("contact") or "").strip()))
-    seen_phones: set[str] = set()
-    new_phones: list[str] = []
-    for a in remaining:
-        for p in a.get("phones", []):
-            if p and p not in seen_phones:
-                new_phones.append(p)
-                seen_phones.add(p)
-    source["phones"] = new_phones
-    source["updated"] = today
-
-    # Build or extend target group
-    if tgt_gid in parties_data:
-        tgt = parties_data[tgt_gid]
-        seen_app = {(a["rt_id"], a["role"]) for a in tgt["appearances"]}
-        for a in matching:
-            if (a["rt_id"], a["role"]) not in seen_app:
-                tgt["appearances"].append(a)
-        tgt["appearances"].sort(key=lambda x: x.get("sale_date_iso", ""), reverse=True)
-        tgt["names"] = sorted(set(tgt["names"] + [a["name"] for a in matching]))
-        tgt["normalized_names"] = sorted(set(tgt["normalized_names"] + [normalize_name(a["name"]) for a in matching]))
-        tgt["rt_ids"] = sorted(set(tgt["rt_ids"] + [a["rt_id"] for a in matching]))
-        tgt["transaction_count"] = len(tgt["rt_ids"])
-        tgt["buy_count"] = sum(1 for a in tgt["appearances"] if a["role"] == "buyer")
-        tgt["sell_count"] = sum(1 for a in tgt["appearances"] if a["role"] == "seller")
-        all_dates = [a["sale_date_iso"] for a in tgt["appearances"] if a.get("sale_date_iso")]
-        tgt["first_active_iso"] = min(all_dates) if all_dates else ""
-        tgt["last_active_iso"] = max(all_dates) if all_dates else ""
-        tgt["updated"] = today
-    else:
-        # Create new group
-        from cleo.parties.registry import _is_company_name
-        from cleo.parties.normalize import make_alias
-
-        names = sorted(set(a["name"] for a in matching))
-        is_company = any(_is_company_name(n) for n in names)
-        aliases = sorted(set(
-            alias for a in matching for alias in a.get("aliases", [])
-        ))
-        for n in names:
-            alias = make_alias(n)
-            if alias and alias.upper() not in {a.upper() for a in aliases}:
-                aliases.append(alias)
-        aliases = sorted(set(aliases))
-
-        parties_data[tgt_gid] = {
-            "display_name": max(set(a["name"] for a in matching), key=lambda n: sum(1 for a in matching if a["name"] == n)),
-            "display_name_override": "",
-            "is_company": is_company,
-            "names": names,
-            "normalized_names": sorted(set(normalize_name(a["name"]) for a in matching)),
-            "addresses": sorted(set(a.get("address", "") for a in matching if (a.get("address") or "").strip())),
-            "contacts": sorted(set(a.get("contact", "") for a in matching if (a.get("contact") or "").strip())),
-            "phones": list(dict.fromkeys(p for a in matching for p in a.get("phones", []) if p)),
-            "aliases": aliases,
-            "appearances": sorted(matching, key=lambda x: x.get("sale_date_iso", ""), reverse=True),
-            "transaction_count": len(set(a["rt_id"] for a in matching)),
-            "buy_count": sum(1 for a in matching if a["role"] == "buyer"),
-            "sell_count": sum(1 for a in matching if a["role"] == "seller"),
-            "first_active_iso": min((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
-            "last_active_iso": max((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
-            "rt_ids": sorted(set(a["rt_id"] for a in matching)),
-            "created": today,
-            "updated": today,
-        }
-
-    # Store split override for rebuild persistence
-    overrides = reg.setdefault("overrides", {})
-    splits = overrides.setdefault("splits", [])
-    splits.append({
-        "source": group_id,
-        "normalized_name": norm_name,
-        "target": tgt_gid,
-        "reason": reason,
-        "date": today,
-    })
-
-    # Sort parties by ID
-    reg["parties"] = dict(sorted(parties_data.items()))
-    save_registry(reg, PARTIES_PATH)
-    _parties_cache = None
-
-    # Audit log
-    _log_party_edit({
-        "action": "disconnect",
-        "source_group": group_id,
-        "name": name,
-        "normalized_name": norm_name,
-        "target_group": tgt_gid,
-        "reason": reason,
-    })
-
-    return {"status": "disconnected", "source_group": group_id, "target_group": tgt_gid, "name": name}
-
-
-@app.post("/api/parties/{group_id}/split-cluster")
-async def api_party_split_cluster(group_id: str, request: Request):
-    """Split multiple names from a party group into a new group together.
-
-    Body: {
-        "names": ["Name A", "Name B"],
-        "reason": "These belong together but not in this group"
-    }
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry, _is_company_name
-    from cleo.parties.normalize import normalize_name, make_alias
-
-    body = await request.json()
-    names = body.get("names") or []
-    reason = (body.get("reason") or "").strip()
-
-    if not names or len(names) < 2:
-        raise HTTPException(400, "At least 2 names are required")
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    source = parties_data[group_id]
-    norm_names = {normalize_name(n) for n in names}
-
-    # Collect matching appearances for ALL names
-    matching = [a for a in source["appearances"] if normalize_name(a["name"]) in norm_names]
-    if not matching:
-        raise HTTPException(400, "None of the specified names found in group")
-
-    remaining = [a for a in source["appearances"] if normalize_name(a["name"]) not in norm_names]
-    if not remaining:
-        raise HTTPException(400, "Cannot split all names out of a group — at least one must remain")
-
-    # Create new group ID
-    max_num = 0
-    for gid in parties_data:
-        if gid.startswith("G") and gid[1:].isdigit():
-            max_num = max(max_num, int(gid[1:]))
-    tgt_gid = f"G{max_num + 1:05d}"
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    # Update source group — remove matched appearances
-    source["appearances"] = remaining
-    source["names"] = sorted(set(a["name"] for a in remaining))
-    source["normalized_names"] = sorted(set(normalize_name(a["name"]) for a in remaining))
-    source["rt_ids"] = sorted(set(a["rt_id"] for a in remaining))
-    source["transaction_count"] = len(source["rt_ids"])
-    source["buy_count"] = sum(1 for a in remaining if a["role"] == "buyer")
-    source["sell_count"] = sum(1 for a in remaining if a["role"] == "seller")
-    dates = [a["sale_date_iso"] for a in remaining if a.get("sale_date_iso")]
-    source["first_active_iso"] = min(dates) if dates else ""
-    source["last_active_iso"] = max(dates) if dates else ""
-    source["addresses"] = sorted(set(a.get("address", "") or "" for a in remaining if (a.get("address") or "").strip()))
-    source["contacts"] = sorted(set(a.get("contact", "") or "" for a in remaining if (a.get("contact") or "").strip()))
-    seen_phones: set[str] = set()
-    new_phones: list[str] = []
-    for a in remaining:
-        for p in a.get("phones", []):
-            if p and p not in seen_phones:
-                new_phones.append(p)
-                seen_phones.add(p)
-    source["phones"] = new_phones
-    source["updated"] = today
-
-    # Create new group with all matched appearances
-    tgt_names = sorted(set(a["name"] for a in matching))
-    is_company = any(_is_company_name(n) for n in tgt_names)
-    aliases = sorted(set(
-        alias for a in matching for alias in a.get("aliases", [])
-    ))
-    for n in tgt_names:
-        alias = make_alias(n)
-        if alias and alias.upper() not in {a.upper() for a in aliases}:
-            aliases.append(alias)
-    aliases = sorted(set(aliases))
-
-    parties_data[tgt_gid] = {
-        "display_name": max(set(a["name"] for a in matching), key=lambda n: sum(1 for a in matching if a["name"] == n)),
-        "display_name_override": "",
-        "is_company": is_company,
-        "names": tgt_names,
-        "normalized_names": sorted(set(normalize_name(a["name"]) for a in matching)),
-        "addresses": sorted(set(a.get("address", "") for a in matching if (a.get("address") or "").strip())),
-        "contacts": sorted(set(a.get("contact", "") for a in matching if (a.get("contact") or "").strip())),
-        "phones": list(dict.fromkeys(p for a in matching for p in a.get("phones", []) if p)),
-        "aliases": aliases,
-        "appearances": sorted(matching, key=lambda x: x.get("sale_date_iso", ""), reverse=True),
-        "transaction_count": len(set(a["rt_id"] for a in matching)),
-        "buy_count": sum(1 for a in matching if a["role"] == "buyer"),
-        "sell_count": sum(1 for a in matching if a["role"] == "seller"),
-        "first_active_iso": min((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
-        "last_active_iso": max((a["sale_date_iso"] for a in matching if a.get("sale_date_iso")), default=""),
-        "rt_ids": sorted(set(a["rt_id"] for a in matching)),
-        "created": today,
-        "updated": today,
-    }
-
-    # Store split overrides for each name (rebuild persistence)
-    overrides = reg.setdefault("overrides", {})
-    splits = overrides.setdefault("splits", [])
-    for nn in norm_names:
-        splits.append({
-            "source": group_id,
-            "normalized_name": nn,
-            "target": tgt_gid,
-            "reason": reason or "Split cluster via party review",
-            "date": today,
-        })
-
-    # Sort parties by ID
-    reg["parties"] = dict(sorted(parties_data.items()))
-    save_registry(reg, PARTIES_PATH)
-    _parties_cache = None
-
-    # Audit log
-    _log_party_edit({
-        "action": "split_cluster",
-        "source_group": group_id,
-        "names": list(names),
-        "normalized_names": list(norm_names),
-        "target_group": tgt_gid,
-        "reason": reason,
-    })
-
-    return {
-        "status": "split_cluster",
-        "source_group": group_id,
-        "target_group": tgt_gid,
-        "names": list(names),
-    }
-
-
-@app.post("/api/parties/{group_id}/confirm")
-async def api_party_confirm(group_id: str, request: Request):
-    """Confirm a name belongs in a party group.
-
-    Body: {"name": "H&R REIT"}
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry
-    from cleo.parties.normalize import normalize_name
-
-    body = await request.json()
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(400, "name is required")
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    norm_name = normalize_name(name)
-
-    # Verify the name exists in this group
-    group_norms = [normalize_name(n) for n in parties_data[group_id].get("names", [])]
-    if norm_name not in group_norms:
-        raise HTTPException(400, f"Name not found in group: {name}")
-
-    # Store confirmation
-    overrides = reg.setdefault("overrides", {})
-    confirmed = overrides.setdefault("confirmed", {})
-    group_confirmed = confirmed.setdefault(group_id, [])
-    if norm_name not in group_confirmed:
-        group_confirmed.append(norm_name)
-
-    save_registry(reg, PARTIES_PATH)
-    _parties_cache = None
-
-    # Audit log
-    _log_party_edit({
-        "action": "confirm",
-        "group": group_id,
-        "name": name,
-        "normalized_name": norm_name,
-    })
-
-    return {"status": "confirmed", "group_id": group_id, "name": name}
-
-
-# ---------------------------------------------------------------------------
-# Party Suggestions (affiliate matching)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/parties/{group_id}/suggestions")
-def api_party_suggestions(group_id: str):
-    """Return suggested affiliate groups based on shared attributes."""
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    from cleo.parties.suggestions import get_suggestions
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    overrides = reg.get("overrides", {})
-    dismissed = overrides.get("dismissed_suggestions", {}).get(group_id, [])
-    mtime = PARTIES_PATH.stat().st_mtime
-
-    return get_suggestions(group_id, parties_data, dismissed, mtime)
-
-
-@app.get("/api/parties/{group_id}/grouping-reason")
-def api_grouping_reason(group_id: str, name: str = ""):
-    """Explain why a name is in this group — shared phones, contacts, aliases.
-
-    Query param: ?name=755 Gardiners Road Inc
-    """
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-    if not name.strip():
-        raise HTTPException(400, "name query parameter is required")
-
-    from cleo.parties.registry import load_registry
-    from cleo.parties.suggestions import get_grouping_reason
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    act = active_dir()
-    if act is None:
-        raise HTTPException(404, "No active parse version")
-
-    return get_grouping_reason(group_id, name.strip(), parties_data, act)
-
-
-@app.get("/api/party-review/chain/{group_id}")
-def api_party_review_chain(group_id: str, name: str = ""):
-    """Return chain link data with full RT records for the chain viewer.
-
-    Builds a 2-3 step chain showing exactly how a name is linked to the group,
-    with full parsed transaction data for each chain step.
-    """
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-    if not name.strip():
-        raise HTTPException(400, "name query parameter is required")
-
-    from cleo.parties.registry import load_registry
-    from cleo.parties.suggestions import get_grouping_reason
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    act = active_dir()
-    if act is None:
-        raise HTTPException(404, "No active parse version")
-
-    reasons = get_grouping_reason(group_id, name.strip(), parties_data, act)
-
-    # Build chain from reasons
-    chain = []
-    direct_reasons = []
-
-    if reasons and reasons[0].get("type") == "chain" and reasons[0].get("chain"):
-        # Transitive chain — use structured chain data
-        chain = reasons[0]["chain"][:3]  # Cap at 3 steps
-    elif reasons:
-        # Direct link — build 2-step chain from the best reason
-        direct_reasons = reasons
-        # Pick the first reason that has linked names (skip alias-only matches)
-        r = None
-        for candidate in reasons:
-            if candidate.get("linked_rt_data"):
-                r = candidate
-                break
-        if r is None:
-            r = reasons[0]
-
-        chain.append({
-            "name": name.strip(),
-            "rt_id": r.get("target_rt_id"),
-            "role": r.get("target_role"),
-            "link_type": r.get("type"),
-            "link_value": r.get("value"),
-        })
-        # Add first linked name as step 2
-        linked = r.get("linked_rt_data", [])
-        if linked:
-            ld = linked[0]
-            chain.append({
-                "name": ld["name"],
-                "rt_id": ld.get("rt_id"),
-                "role": ld.get("role"),
-                "link_type": None,
-                "link_value": None,
-            })
-    else:
-        # No reasons found — fallback: show review name and anchor with normalization banner
-        p = parties_data[group_id]
-        group_names = p.get("names", [])
-        # Pick anchor (name with most appearances)
-        apps = p.get("appearances", [])
-        name_counts: dict[str, int] = {}
-        for a in apps:
-            name_counts[a["name"]] = name_counts.get(a["name"], 0) + 1
-        anchor = max(group_names, key=lambda n: name_counts.get(n, 0)) if group_names else None
-
-        # Find any RT for the review name
-        review_rt = None
-        review_role = None
-        for a in apps:
-            if a["name"] == name.strip():
-                review_rt = a["rt_id"]
-                review_role = a["role"]
-                break
-        chain.append({
-            "name": name.strip(),
-            "rt_id": review_rt,
-            "role": review_role,
-            "link_type": "normalization",
-            "link_value": "Same normalized name",
-        })
-        if anchor and anchor != name.strip():
-            anchor_rt = None
-            anchor_role = None
-            for a in apps:
-                if a["name"] == anchor:
-                    anchor_rt = a["rt_id"]
-                    anchor_role = a["role"]
-                    break
-            chain.append({
-                "name": anchor,
-                "rt_id": anchor_rt,
-                "role": anchor_role,
-                "link_type": None,
-                "link_value": None,
-            })
-
-    # Load full RT data for each chain step
-    for step in chain:
-        rt_id = step.get("rt_id")
-        if rt_id:
-            rt_file = act / f"{rt_id}.json"
-            if rt_file.exists():
-                data = json.loads(rt_file.read_text(encoding="utf-8"))
-                step["rt_data"] = {
-                    "transaction": data.get("transaction", {}),
-                    "transferor": data.get("transferor", {}),
-                    "transferee": data.get("transferee", {}),
-                    "site": data.get("site", {}),
-                    "consideration": data.get("consideration", {}),
-                    "description": data.get("description", ""),
-                    "photos": data.get("photos", []),
-                    "export_extras": data.get("export_extras", {}),
-                }
-            else:
-                step["rt_data"] = None
-        else:
-            step["rt_data"] = None
-
-    return {"chain": chain, "direct_reasons": direct_reasons}
-
-
-@app.post("/api/parties/{group_id}/merge")
-async def api_party_merge(group_id: str, request: Request):
-    """Merge a source group into this target group.
-
-    Body: {"source_group": "G02654", "reason": "Same parent company"}
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry
-
-    body = await request.json()
-    source_group = (body.get("source_group") or "").strip()
-    reason = (body.get("reason") or "").strip()
-
-    if not source_group:
-        raise HTTPException(400, "source_group is required")
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Target group not found: {group_id}")
-    if source_group not in parties_data:
-        raise HTTPException(404, f"Source group not found: {source_group}")
-    if group_id == source_group:
-        raise HTTPException(400, "Cannot merge a group into itself")
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    # Perform merge (same pattern as registry.py)
-    src = parties_data.pop(source_group)
-    tgt = parties_data[group_id]
-
-    tgt["names"] = sorted(set(tgt["names"] + src["names"]))
-    tgt["normalized_names"] = sorted(set(tgt["normalized_names"] + src["normalized_names"]))
-    tgt["addresses"] = sorted(set(tgt["addresses"] + src["addresses"]))
-    tgt["contacts"] = sorted(set(tgt["contacts"] + src["contacts"]))
-    seen_p = set(tgt["phones"])
-    for p in src["phones"]:
-        if p not in seen_p:
-            tgt["phones"].append(p)
-            seen_p.add(p)
-    tgt["aliases"] = sorted(set(tgt["aliases"] + src["aliases"]))
-    tgt["alternate_names"] = sorted(set(tgt.get("alternate_names", []) + src.get("alternate_names", [])))
-    seen_app = {(a["rt_id"], a["role"]) for a in tgt["appearances"]}
-    for a in src["appearances"]:
-        if (a["rt_id"], a["role"]) not in seen_app:
-            tgt["appearances"].append(a)
-    tgt["appearances"].sort(key=lambda x: x.get("sale_date_iso", ""), reverse=True)
-    tgt["rt_ids"] = sorted(set(tgt["rt_ids"] + src["rt_ids"]))
-    tgt["transaction_count"] = len(tgt["rt_ids"])
-    tgt["buy_count"] = sum(1 for a in tgt["appearances"] if a["role"] == "buyer")
-    tgt["sell_count"] = sum(1 for a in tgt["appearances"] if a["role"] == "seller")
-    all_dates = [a["sale_date_iso"] for a in tgt["appearances"] if a.get("sale_date_iso")]
-    tgt["first_active_iso"] = min(all_dates) if all_dates else ""
-    tgt["last_active_iso"] = max(all_dates) if all_dates else ""
-    tgt["is_company"] = tgt["is_company"] or src["is_company"]
-    tgt["updated"] = today
-
-    # Store merge override for rebuild persistence
-    overrides = reg.setdefault("overrides", {})
-    merges = overrides.setdefault("merge", [])
-    merges.append([group_id, source_group])
-
-    reg["parties"] = dict(sorted(parties_data.items()))
-    save_registry(reg, PARTIES_PATH)
-    _parties_cache = None
-
-    # Audit log
-    _log_party_edit({
-        "action": "merge",
-        "target_group": group_id,
-        "source_group": source_group,
-        "reason": reason,
-    })
-
-    return {"status": "merged", "target_group": group_id, "source_group": source_group}
-
-
-@app.post("/api/parties/{group_id}/dismiss-suggestion")
-async def api_party_dismiss_suggestion(group_id: str, request: Request):
-    """Dismiss a suggested affiliate group.
-
-    Body: {"suggested_group": "G02654", "reason": "Not related"}
-    """
-    global _parties_cache
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry, save_registry
-
-    body = await request.json()
-    suggested_group = (body.get("suggested_group") or "").strip()
-    reason = (body.get("reason") or "").strip()
-
-    if not suggested_group:
-        raise HTTPException(400, "suggested_group is required")
-
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    overrides = reg.setdefault("overrides", {})
-    dismissed = overrides.setdefault("dismissed_suggestions", {})
-    group_dismissed = dismissed.setdefault(group_id, [])
-    if suggested_group not in group_dismissed:
-        group_dismissed.append(suggested_group)
-
-    save_registry(reg, PARTIES_PATH)
-
-    # Audit log
-    _log_party_edit({
-        "action": "dismiss_suggestion",
-        "group": group_id,
-        "suggested_group": suggested_group,
-        "reason": reason,
-    })
-
-    return {"status": "dismissed", "group_id": group_id, "suggested_group": suggested_group}
-
-
-# ---------------------------------------------------------------------------
-# Party Review (investigative review page)
-# ---------------------------------------------------------------------------
-
-@app.get("/api/party-review/search")
-def api_party_review_search(q: str = ""):
-    """Fuzzy search across all party group fields, ranked by relevance."""
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    q = q.strip()
-    if not q:
-        return []
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-    overrides = reg.get("overrides", {})
-    confirmed = overrides.get("confirmed", {})
-    q_lower = q.lower()
-
-    results = []
-    for gid, p in parties_data.items():
-        score = 0.0
-        matched_fields: list[str] = []
-        matched_values: list[str] = []
-
-        # Search names
-        for name in p.get("names", []):
-            name_lower = name.lower()
-            if name_lower == q_lower:
-                score += 100
-                if "name" not in matched_fields:
-                    matched_fields.append("name")
-                matched_values.append(name)
-            elif name_lower.startswith(q_lower):
-                score += 50
-                if "name" not in matched_fields:
-                    matched_fields.append("name")
-                matched_values.append(name)
-            elif q_lower in name_lower:
-                score += 10
-                if "name" not in matched_fields:
-                    matched_fields.append("name")
-                matched_values.append(name)
-
-        # Search aliases
-        for alias in p.get("aliases", []):
-            alias_lower = alias.lower()
-            if alias_lower == q_lower:
-                score += 80
-                if "alias" not in matched_fields:
-                    matched_fields.append("alias")
-                matched_values.append(alias)
-            elif q_lower in alias_lower:
-                score += 10
-                if "alias" not in matched_fields:
-                    matched_fields.append("alias")
-                matched_values.append(alias)
-
-        # Search alternate_names
-        for alt in p.get("alternate_names", []):
-            alt_lower = alt.lower()
-            if alt_lower == q_lower:
-                score += 80
-                if "alt_name" not in matched_fields:
-                    matched_fields.append("alt_name")
-                matched_values.append(alt)
-            elif q_lower in alt_lower:
-                score += 10
-                if "alt_name" not in matched_fields:
-                    matched_fields.append("alt_name")
-                matched_values.append(alt)
-
-        # Search contacts
-        for contact in p.get("contacts", []):
-            contact_lower = contact.lower()
-            if contact_lower == q_lower:
-                score += 60
-                if "contact" not in matched_fields:
-                    matched_fields.append("contact")
-                matched_values.append(contact)
-            elif q_lower in contact_lower:
-                score += 10
-                if "contact" not in matched_fields:
-                    matched_fields.append("contact")
-                matched_values.append(contact)
-
-        # Search phones
-        q_digits = "".join(c for c in q if c.isdigit())
-        if q_digits and len(q_digits) >= 3:
-            for phone in p.get("phones", []):
-                phone_digits = "".join(c for c in phone if c.isdigit())
-                if q_digits in phone_digits:
-                    score += 60
-                    if "phone" not in matched_fields:
-                        matched_fields.append("phone")
-                    matched_values.append(phone)
-
-        # Search addresses
-        for addr in p.get("addresses", []):
-            if q_lower in addr.lower():
-                score += 60
-                if "address" not in matched_fields:
-                    matched_fields.append("address")
-                matched_values.append(addr)
-
-        # Search display_name
-        dn = p.get("display_name_override") or p.get("display_name", "")
-        if dn and q_lower in dn.lower() and "name" not in matched_fields:
-            score += 10
-            matched_fields.append("display_name")
-            matched_values.append(dn)
-
-        if score > 0:
-            # Tiebreaker: more transactions = more relevant
-            score += p.get("transaction_count", 0) * 0.1
-            results.append({
-                "group_id": gid,
-                "display_name": p.get("display_name_override") or p.get("display_name", ""),
-                "is_company": p.get("is_company", True),
-                "names_count": len(p.get("names", [])),
-                "transaction_count": p.get("transaction_count", 0),
-                "matched_fields": matched_fields,
-                "matched_values": sorted(set(matched_values)),
-                "relevance_score": round(score, 1),
-            })
-
-    results.sort(key=lambda r: r["relevance_score"], reverse=True)
-    return results[:50]
-
-
-@app.get("/api/party-review/needs-review")
-def api_party_review_needs_review():
-    """Groups sorted by suspicion score for the review queue."""
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-    overrides = reg.get("overrides", {})
-    confirmed = overrides.get("confirmed", {})
-
-    results = []
-    for gid, p in parties_data.items():
-        score = 0
-        names_count = len(p.get("names", []))
-        txn_count = p.get("transaction_count", 0)
-
-        # Suspicion: many names
-        if names_count >= 20:
-            score += 50
-        elif names_count >= 10:
-            score += 30
-
-        # Suspicion: no confirmed names
-        if not confirmed.get(gid):
-            score += 15
-
-        # Suspicion: high name diversity (names/txns close to 1.0)
-        if txn_count > 0:
-            diversity = names_count / txn_count
-            if diversity > 0.8:
-                score += 10
-
-        # Suspicion: has alternate_names
-        alt_count = len(p.get("alternate_names", []))
-        if alt_count >= 5:
-            score += 15
-        elif alt_count > 0:
-            score += 5
-
-        # Filter: score >= 20 OR (score >= 15 AND names_count >= 3)
-        if score >= 20 or (score >= 15 and names_count >= 3):
-            results.append({
-                "group_id": gid,
-                "display_name": p.get("display_name_override") or p.get("display_name", ""),
-                "is_company": p.get("is_company", True),
-                "names_count": names_count,
-                "transaction_count": txn_count,
-                "suspicion_score": score,
-                "has_confirmed": bool(confirmed.get(gid)),
-            })
-
-    results.sort(key=lambda r: r["suspicion_score"], reverse=True)
-    return results[:200]
-
-
-@app.get("/api/party-review/appearances/{group_id}")
-def api_party_review_appearances(group_id: str):
-    """Load full parsed RT records for each appearance in a party group."""
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    if group_id not in parties_data:
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    p = parties_data[group_id]
-    act = active_dir()
-    if act is None:
-        raise HTTPException(404, "No active parse version")
-
-    appearances = []
-    skipped = 0
-
-    # Frequency counters for highlighting
-    phone_freq: dict[str, int] = {}
-    contact_freq: dict[str, int] = {}
-    address_freq: dict[str, int] = {}
-
-    for app_entry in p.get("appearances", []):
-        rt_id = app_entry["rt_id"]
-        role = app_entry["role"]
-        rt_file = act / f"{rt_id}.json"
-
-        if not rt_file.exists():
-            skipped += 1
-            continue
-
-        data = json.loads(rt_file.read_text(encoding="utf-8"))
-        party_key = "transferor" if role == "seller" else "transferee"
-        party = data.get(party_key, {})
-        txn = data.get("transaction", {})
-
-        addr = txn.get("address", {})
-        site = data.get("site", {})
-        consideration = data.get("consideration", {})
-        broker = data.get("broker", {})
-        extras = data.get("export_extras", {})
-
-        entry = {
-            "rt_id": rt_id,
-            "role": role,
-            # Party fields
-            "entity_name": party.get("name", app_entry.get("name", "")),
-            "contact": party.get("contact", ""),
-            "attention": party.get("attention", ""),
-            "phone": party.get("phone", ""),
-            "phones": party.get("phones", []),
-            "address": party.get("address", ""),
-            "aliases": party.get("aliases", []),
-            "alternate_names": party.get("alternate_names", []),
-            "company_lines": party.get("company_lines", []),
-            "contact_lines": party.get("contact_lines", []),
-            "address_lines": party.get("address_lines", []),
-            "officer_titles": party.get("officer_titles", []),
-            # Transaction fields
-            "sale_date_iso": app_entry.get("sale_date_iso", ""),
-            "sale_date": txn.get("sale_date", ""),
-            "sale_price": app_entry.get("sale_price", ""),
-            "prop_address": app_entry.get("prop_address", addr.get("address", "")),
-            "prop_address_suite": addr.get("address_suite", ""),
-            "prop_city": app_entry.get("prop_city", addr.get("city", "")),
-            "prop_municipality": addr.get("municipality", ""),
-            "prop_province": addr.get("province", ""),
-            "prop_postal_code": addr.get("postal_code", "") or extras.get("postal_code", ""),
-            "arn": txn.get("arn", ""),
-            "pins": txn.get("pins", []),
-            # Site
-            "legal_description": site.get("legal_description", ""),
-            "site_area": site.get("site_area", ""),
-            "site_area_units": site.get("site_area_units", ""),
-            "zoning": site.get("zoning", ""),
-            # Consideration
-            "cash": consideration.get("cash", ""),
-            "assumed_debt": consideration.get("assumed_debt", ""),
-            "consideration_verbatim": consideration.get("verbatim", ""),
-            # Broker
-            "brokerage": broker.get("brokerage", ""),
-            "broker_phone": broker.get("phone", ""),
-            # Extras
-            "building_sf": extras.get("building_sf", ""),
-            "description": data.get("description", ""),
-            "photos": data.get("photos", []),
-        }
-        appearances.append(entry)
-
-        # Track frequencies
-        for ph in entry["phones"]:
-            if ph:
-                phone_freq[ph] = phone_freq.get(ph, 0) + 1
-        if entry["contact"]:
-            contact_freq[entry["contact"]] = contact_freq.get(entry["contact"], 0) + 1
-        if entry["address"]:
-            address_freq[entry["address"]] = address_freq.get(entry["address"], 0) + 1
-
-    # Only include fields appearing 2+ times
-    field_frequencies = {
-        "phones": {k: v for k, v in phone_freq.items() if v >= 2},
-        "contacts": {k: v for k, v in contact_freq.items() if v >= 2},
-        "addresses": {k: v for k, v in address_freq.items() if v >= 2},
-    }
-
-    return {
-        "group_id": group_id,
-        "appearances": appearances,
-        "total": len(appearances),
-        "skipped": skipped,
-        "field_frequencies": field_frequencies,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Keywords (brand keyword matching)
-# ---------------------------------------------------------------------------
-
-def _load_keywords() -> dict:
-    """Load brand keywords data from disk."""
-    if not KEYWORDS_PATH.exists():
-        return {"keywords": {}, "reviews": {}}
-    data = json.loads(KEYWORDS_PATH.read_text(encoding="utf-8"))
-    data.setdefault("keywords", {})
-    data.setdefault("reviews", {})
-    return data
-
-
-def _save_keywords(data: dict) -> None:
-    """Atomically save brand keywords data."""
-    tmp = KEYWORDS_PATH.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    tmp.replace(KEYWORDS_PATH)
-
-
-def _search_parties_for_keyword(keyword: str, parties_data: dict) -> list[dict]:
-    """Case-insensitive substring search across party group fields."""
-    kw_lower = keyword.lower()
-    results = []
-
-    for gid, p in parties_data.items():
-        matched_fields: list[str] = []
-        matched_snippets: list[str] = []
-
-        # Search names
-        for name in p.get("names", []):
-            if kw_lower in name.lower():
-                if "names" not in matched_fields:
-                    matched_fields.append("names")
-                matched_snippets.append(name)
-
-        # Search aliases
-        for alias in p.get("aliases", []):
-            if kw_lower in alias.lower():
-                if "aliases" not in matched_fields:
-                    matched_fields.append("aliases")
-                matched_snippets.append(alias)
-
-        # Search alternate_names
-        for alt in p.get("alternate_names", []):
-            if kw_lower in alt.lower():
-                if "alternate_names" not in matched_fields:
-                    matched_fields.append("alternate_names")
-                matched_snippets.append(alt)
-
-        # Search contacts
-        for contact in p.get("contacts", []):
-            if kw_lower in contact.lower():
-                if "contacts" not in matched_fields:
-                    matched_fields.append("contacts")
-                matched_snippets.append(contact)
-
-        if matched_fields:
-            results.append({
-                "group_id": gid,
-                "display_name": p.get("display_name_override") or p.get("display_name", ""),
-                "transaction_count": p.get("transaction_count", 0),
-                "matched_fields": matched_fields,
-                "matched_snippets": sorted(set(matched_snippets)),
-                "is_company": p.get("is_company", True),
-            })
-
-    # Sort by transaction count descending
-    results.sort(key=lambda r: r["transaction_count"], reverse=True)
-    return results
-
-
-@app.get("/api/keywords")
-def api_keywords():
-    """List all keywords with match counts and review progress."""
-    kw_data = _load_keywords()
-    keywords = kw_data["keywords"]
-    reviews = kw_data["reviews"]
-
-    # Load parties for match counting
-    if PARTIES_PATH.exists():
-        from cleo.parties.registry import load_registry
-        reg = load_registry(PARTIES_PATH)
-        parties_data = reg.get("parties", {})
-    else:
-        parties_data = {}
-
-    result = []
-    for kw, meta in keywords.items():
-        # Count matches
-        matches = _search_parties_for_keyword(kw, parties_data)
-        # Count reviews for this keyword
-        reviewed = sum(
-            1 for rk, rv in reviews.items()
-            if rk.startswith(f"{kw}::")
-        )
-        result.append({
-            "keyword": kw,
-            "display_name": meta.get("display_name", ""),
-            "parent_group_id": meta.get("parent_group_id", ""),
-            "created": meta.get("created", ""),
-            "match_count": len(matches),
-            "reviewed_count": reviewed,
-        })
-
-    return result
-
-
-@app.post("/api/keywords")
-async def api_add_keyword(request: Request):
-    """Add a new keyword.
-
-    Body: {"keyword": "H&R", "display_name": "H&R REIT", "parent_group_id": "G00882"}
-    """
-    body = await request.json()
-    keyword = (body.get("keyword") or "").strip()
-    display_name = (body.get("display_name") or "").strip()
-    parent_group_id = (body.get("parent_group_id") or "").strip()
-
-    if not keyword:
-        raise HTTPException(400, "keyword is required")
-    if not display_name:
-        raise HTTPException(400, "display_name is required")
-
-    kw_data = _load_keywords()
-    if keyword in kw_data["keywords"]:
-        raise HTTPException(409, f"Keyword already exists: {keyword}")
-
-    kw_data["keywords"][keyword] = {
-        "display_name": display_name,
-        "parent_group_id": parent_group_id,
-        "created": datetime.now().strftime("%Y-%m-%d"),
-    }
-    _save_keywords(kw_data)
-
-    return {"status": "created", "keyword": keyword}
-
-
-@app.delete("/api/keywords/{keyword:path}")
-def api_delete_keyword(keyword: str):
-    """Remove a keyword and its reviews."""
-    kw_data = _load_keywords()
-    if keyword not in kw_data["keywords"]:
-        raise HTTPException(404, f"Keyword not found: {keyword}")
-
-    del kw_data["keywords"][keyword]
-    # Remove associated reviews
-    prefix = f"{keyword}::"
-    kw_data["reviews"] = {
-        k: v for k, v in kw_data["reviews"].items()
-        if not k.startswith(prefix)
-    }
-    _save_keywords(kw_data)
-
-    return {"status": "deleted", "keyword": keyword}
-
-
-@app.get("/api/keywords/{keyword:path}/matches")
-def api_keyword_matches(keyword: str):
-    """Search all party data for a keyword, return matching groups."""
-    kw_data = _load_keywords()
-    if keyword not in kw_data["keywords"]:
-        raise HTTPException(404, f"Keyword not found: {keyword}")
-
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    parties_data = reg.get("parties", {})
-
-    matches = _search_parties_for_keyword(keyword, parties_data)
-
-    # Enrich with review status
-    reviews = kw_data["reviews"]
-    for m in matches:
-        review_key = f"{keyword}::{m['group_id']}"
-        review = reviews.get(review_key)
-        if review:
-            m["review"] = review.get("decision", "")
-            m["review_notes"] = review.get("notes", "")
-        else:
-            m["review"] = ""
-            m["review_notes"] = ""
-
-    return matches
-
-
-@app.post("/api/keywords/{keyword:path}/review/{group_id}")
-async def api_keyword_review(keyword: str, group_id: str, request: Request):
-    """Review a keyword match for a group.
-
-    Body: {"decision": "confirmed"|"denied", "notes": ""}
-    """
-    body = await request.json()
-    decision = (body.get("decision") or "").strip()
-    notes = (body.get("notes") or "").strip()
-
-    if decision not in ("confirmed", "denied"):
-        raise HTTPException(400, "decision must be 'confirmed' or 'denied'")
-
-    kw_data = _load_keywords()
-    if keyword not in kw_data["keywords"]:
-        raise HTTPException(404, f"Keyword not found: {keyword}")
-
-    if not PARTIES_PATH.exists():
-        raise HTTPException(404, "Party registry not built. Run: cleo parties")
-
-    from cleo.parties.registry import load_registry
-    reg = load_registry(PARTIES_PATH)
-    if group_id not in reg.get("parties", {}):
-        raise HTTPException(404, f"Party group not found: {group_id}")
-
-    # Get matched fields/snippets for audit
-    parties_data = reg.get("parties", {})
-    matches = _search_parties_for_keyword(keyword, {group_id: parties_data[group_id]})
-    matched_fields = matches[0]["matched_fields"] if matches else []
-    matched_snippets = matches[0]["matched_snippets"] if matches else []
-
-    review_key = f"{keyword}::{group_id}"
-    kw_data["reviews"][review_key] = {
-        "keyword": keyword,
-        "group_id": group_id,
-        "decision": decision,
-        "notes": notes,
-        "matched_fields": matched_fields,
-        "matched_snippets": matched_snippets,
-        "date": datetime.now().strftime("%Y-%m-%d"),
-    }
-    _save_keywords(kw_data)
-
-    # Audit log
-    _log_party_edit({
-        "action": "keyword_review",
-        "keyword": keyword,
-        "group_id": group_id,
-        "decision": decision,
-        "notes": notes,
-        "matched_fields": matched_fields,
-        "matched_snippets": matched_snippets,
-    })
-
-    return {"status": "saved", "keyword": keyword, "group_id": group_id, "decision": decision}
-
-
-def _log_party_edit(entry: dict) -> None:
-    """Append an edit entry to the party edits JSONL audit log."""
-    entry["timestamp"] = datetime.now().isoformat(timespec="seconds")
-    with open(PARTY_EDITS_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
 @app.get("/api/html/{rt_id}")
 def api_html(rt_id: str):
     """Serve raw HTML file for iframe display."""
@@ -4313,12 +2792,9 @@ def api_active(rt_id: str):
         data.get("transaction", {}).get("sale_price", ""),
         data.get("export_extras", {}).get("building_sf", ""),
     )
-    # Enrich parties with group_id and contact_id for linking
+    # Enrich parties with contact_id for linking
     for party_key in ("transferor", "transferee"):
         if party_key in data:
-            data[party_key]["group_id"] = _lookup_group_id(
-                data[party_key].get("name", "")
-            )
             data[party_key]["contact_id"] = _make_contact_id(
                 data[party_key].get("contact", "")
             )
@@ -4692,9 +3168,9 @@ def api_regressions():
             continue
         act_data = json.loads(act_file.read_text(encoding="utf-8"))
         sb_data = json.loads(sb_file.read_text(encoding="utf-8"))
-        # Strip volatile fields
-        act_clean = {k: v for k, v in act_data.items() if k not in VOLATILE_FIELDS}
-        sb_clean = {k: v for k, v in sb_data.items() if k not in VOLATILE_FIELDS}
+        # Strip volatile fields (recurse into nested dicts)
+        act_clean = _parse_store._strip_volatile(act_data)
+        sb_clean = _parse_store._strip_volatile(sb_data)
         if act_clean != sb_clean:
             regression_ids.append(rt_id)
 
@@ -4955,11 +3431,6 @@ def api_dashboard():
                 for rt_id in p.get("rt_ids", []):
                     rt_to_brands[rt_id] = brands
 
-    party_count = 0
-    if PARTIES_PATH.exists():
-        parties_data = _load_json(PARTIES_PATH)
-        party_count = len(parties_data.get("groups", {}))
-
     # --- Scan transactions ---
     year_counter: Counter = Counter()
     year_volume: Counter = Counter()
@@ -5163,7 +3634,6 @@ def api_dashboard():
         "stats": {
             "total_transactions": tx_count,
             "total_properties": prop_count,
-            "total_parties": party_count,
             "properties_with_brands": len(branded_props),
             "brands_traded_current_month": len(brands_current_month),
             "brands_traded_last_month": len(brands_last_month),
@@ -5195,48 +3665,11 @@ def api_dashboard():
 
 @app.get("/api/dashboard/pipeline")
 def api_dashboard_pipeline():
-    """Aggregate CRM deal data by stage for the pipeline summary."""
-    deals_data: dict = {}
-    if CRM_DEALS_PATH.exists():
-        deals_data = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8"))
-
-    deals = deals_data.get("deals", {})
-
-    # Load properties for price lookup
-    props: dict = {}
-    if PROPERTIES_PATH.exists():
-        from cleo.properties.registry import load_registry
-        reg = load_registry(PROPERTIES_PATH)
-        props = reg.get("properties", {})
-
-    stage_agg: dict[str, dict] = {}
-    active_stages = {"active_deal", "in_negotiation", "under_contract"}
-    closed_stages = {"closed_won", "lost_cancelled"}
-    all_stages = active_stages | closed_stages
-
-    for stage in all_stages:
-        stage_agg[stage] = {"count": 0, "value": 0}
-
-    for deal in deals.values():
-        stage = deal.get("stage", "active_deal")
-        if stage not in all_stages:
-            continue
-        stage_agg[stage]["count"] += 1
-        # Try to get deal value from associated property's latest sale price
-        prop_id = deal.get("prop_id", "")
-        if prop_id and prop_id in props:
-            p = props[prop_id]
-            price = _parse_price_float(p.get("latest_sale_price", ""))
-            if price:
-                stage_agg[stage]["value"] += price
-
-    total_active = sum(stage_agg[s]["count"] for s in active_stages)
-    total_active_value = sum(stage_agg[s]["value"] for s in active_stages)
-
+    """Stub — legacy CRM deals removed. Will be rebuilt with anchor layer."""
     return JSONResponse({
-        "stages": stage_agg,
-        "total_active": total_active,
-        "total_active_value": round(total_active_value),
+        "stages": {},
+        "total_active": 0,
+        "total_active_value": 0,
     })
 
 
@@ -5250,18 +3683,8 @@ def api_dashboard_prospects():
         reg = load_registry(PROPERTIES_PATH)
         props = reg.get("properties", {})
 
-    # Load deals to determine pipeline status
-    deals_data: dict = {}
-    if CRM_DEALS_PATH.exists():
-        deals_data = json.loads(CRM_DEALS_PATH.read_text(encoding="utf-8"))
-    deals = deals_data.get("deals", {})
-
-    # Build set of prop_ids that already have deals
+    # Deals — stub until CRM rebuilt with anchor layer
     props_with_deals: set[str] = set()
-    for deal in deals.values():
-        pid = deal.get("prop_id", "")
-        if pid:
-            props_with_deals.add(pid)
 
     # Load brand matches for enrichment
     brand_matches = _get_brand_matches()
@@ -5297,34 +3720,9 @@ def api_dashboard_prospects():
     stale.sort(key=lambda x: x["days_since_sale"], reverse=True)
     stale_top = stale[:10]
 
-    # Repeat traders: party groups with highest buy+sell count
-    parties_data: dict = {}
-    if PARTIES_PATH.exists():
-        parties_data = _load_json(PARTIES_PATH)
-
-    groups = parties_data.get("groups", {})
-    traders: list[dict] = []
-    for gid, g in groups.items():
-        buy = g.get("buy_count", 0)
-        sell = g.get("sell_count", 0)
-        total = buy + sell
-        if total < 2:
-            continue
-        traders.append({
-            "group_id": gid,
-            "name": g.get("canonical_name", ""),
-            "buy_count": buy,
-            "sell_count": sell,
-            "total_volume": round(g.get("total_volume", 0)),
-            "last_active": g.get("last_active", ""),
-        })
-
-    traders.sort(key=lambda x: x["buy_count"] + x["sell_count"], reverse=True)
-    traders_top = traders[:10]
-
     return JSONResponse({
         "stale_properties": stale_top,
-        "repeat_traders": traders_top,
+        "repeat_traders": [],
     })
 
 
@@ -5335,10 +3733,10 @@ def api_dashboard_prospects():
 
 @app.get("/api/search")
 def api_search(q: str = "", limit: int = 5):
-    """Search across transactions, properties, parties, and contacts."""
+    """Search across transactions, properties, and contacts."""
     q = q.strip().lower()
     if len(q) < 2:
-        return JSONResponse({"transactions": [], "properties": [], "parties": [], "contacts": []})
+        return JSONResponse({"transactions": [], "properties": [], "contacts": []})
 
     def _match(items: list[dict], key: str, id_field: str, label_fn, sublabel_fn):
         hits = []
@@ -5381,20 +3779,6 @@ def api_search(q: str = "", limit: int = 5):
         lambda r: f"{r.get('prop_id', '')} | {r.get('transaction_count', 0)} transactions",
     )
 
-    # Parties
-    party_data = _parties_cache
-    if party_data is None:
-        try:
-            api_parties()
-            party_data = _parties_cache or []
-        except Exception:
-            party_data = []
-    party_hits = _match(
-        party_data, "_search_text", "group_id",
-        lambda r: r.get("display_name", ""),
-        lambda r: f"{r.get('group_id', '')} | {r.get('transaction_count', 0)} transactions",
-    )
-
     # Contacts
     contact_data = _contacts_cache
     if contact_data is None:
@@ -5412,7 +3796,6 @@ def api_search(q: str = "", limit: int = 5):
     return JSONResponse({
         "transactions": tx_hits,
         "properties": prop_hits,
-        "parties": party_hits,
         "contacts": contact_hits,
     })
 
@@ -5438,8 +3821,7 @@ def _save_json(path: Path, data: dict) -> None:
 
 _ALLOWED_COMMANDS: dict[str, list[str]] = {
     "rebuild-properties": ["properties"],
-    "rebuild-parties": ["parties"],
-    "rebuild-all": ["properties", "&&", "parties"],
+    "rebuild-all": ["properties"],
     "apply-geocodes": ["properties", "--apply-geocodes"],
     "refresh-geocodes": ["properties", "--apply-geocodes", "--refresh"],
     "frontend-build": ["_frontend_build"],

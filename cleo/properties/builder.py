@@ -148,6 +148,8 @@ def _collect_transactions(records: List[Dict]) -> List[Dict]:
             "sale_date": txn.get("sale_date", ""),
             "sale_price": txn.get("sale_price"),
             "sale_price_display": txn.get("sale_price_display", ""),
+            "transaction_type": txn.get("transaction_type", ""),
+            "property_type": rec.get("property_type", ""),
             "arn": txn.get("arn", ""),
             "pins": txn.get("pins", []),
             "seller_name": seller.get("name", ""),
@@ -352,6 +354,12 @@ def build_property(arn: str, records: List[Dict], property_id: str) -> Dict:
     sources = sorted(set(r.get("source", "") for r in records))
     source_records = sorted(r["id"] for r in records)
 
+    # Collect unique property types from RT source records
+    property_types = sorted(set(
+        r.get("property_type", "") for r in records
+        if r.get("source") == "realtrack" and r.get("property_type")
+    ))
+
     # Most recent description and broker
     latest_desc = ""
     latest_broker = ""
@@ -379,6 +387,7 @@ def build_property(arn: str, records: List[Dict], property_id: str) -> Dict:
         # Source records
         "source_records": source_records,
         "sources": sources,
+        "property_types": property_types,
 
         # Current owner
         "current_owner": owner,
@@ -420,12 +429,22 @@ def build_property(arn: str, records: List[Dict], property_id: str) -> Dict:
     }
 
 
-def build_properties(compiled_dir: Path) -> Tuple[Dict, Dict]:
+def build_properties(compiled_dir: Path, id_map_path: Optional[Path] = None) -> Tuple[Dict, Dict]:
     """Build the full property master list from compiled/active.
+
+    If id_map_path is provided, uses the persistent ID map to assign stable
+    PRO_NNNNN IDs. Otherwise falls back to sequential assignment.
 
     Returns (properties_data, unresolved_data).
     """
+    from cleo.properties.id_map import load_id_map, save_id_map, assign_id
+
     start = time.time()
+
+    # Load persistent ID map (or create empty)
+    id_map = None
+    if id_map_path:
+        id_map = load_id_map(id_map_path)
 
     # Phase 1: Read all compiled records and group by ARN
     logger.info("Reading compiled records from %s...", compiled_dir)
@@ -470,16 +489,31 @@ def build_properties(compiled_dir: Path) -> Tuple[Dict, Dict]:
     logger.info("Read %d compiled records in %.1fs", total, read_time)
     logger.info("Grouped into %d unique ARNs, %d unresolved", len(arn_groups), len(unresolved))
 
-    # Phase 2: Build property records
+    # Phase 2: Build property records with stable IDs
     build_start = time.time()
     properties: Dict[str, Dict] = {}
-    pid_counter = 0
+    new_ids = 0
+    existing_ids = 0
 
     for arn in sorted(arn_groups.keys()):
-        pid_counter += 1
-        pid = f"P{pid_counter:05d}"
+        if id_map:
+            was_known = arn in id_map["map"]
+            pid = assign_id(id_map, arn)
+            if was_known:
+                existing_ids += 1
+            else:
+                new_ids += 1
+        else:
+            pid = f"PRO_{len(properties) + 1:05d}"
+            new_ids += 1
         prop = build_property(arn, arn_groups[arn], pid)
         properties[pid] = prop
+
+    # Save updated ID map
+    if id_map and id_map_path:
+        save_id_map(id_map, id_map_path)
+        logger.info("ID map: %d existing, %d new, next_id=%d",
+                     existing_ids, new_ids, id_map["meta"]["next_id"])
 
     build_time = time.time() - build_start
     logger.info("Built %d property records in %.1fs", len(properties), build_time)
@@ -517,6 +551,9 @@ def build_properties(compiled_dir: Path) -> Tuple[Dict, Dict]:
             "properties_with_tenants": has_tenants,
             "arn_disagreements": arn_disagreements,
             "by_source": by_source,
+            "id_map_existing": existing_ids,
+            "id_map_new": new_ids,
+            "id_map_total": id_map["meta"]["next_id"] - 1 if id_map else len(properties),
             "elapsed_seconds": round(elapsed, 1),
         },
         "properties": properties,

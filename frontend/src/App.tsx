@@ -7,14 +7,20 @@ import { AppLayout } from "./components/ui/AppLayout";
 import { DashboardPage } from "./pages/DashboardPage";
 import { PropertiesPage } from "./pages/PropertiesPage";
 import { PropertyDetailPage } from "./pages/PropertyDetailPage";
+import { GroupsPage } from "./pages/GroupsPage";
+import { GroupDetailPage } from "./pages/GroupDetailPage";
+import { ContactsPage } from "./pages/ContactsPage";
+import { ContactDetailPage } from "./pages/ContactDetailPage";
 import { TransactionsPage } from "./pages/TransactionsPage";
 import { TransactionDetailPage } from "./pages/TransactionDetailPage";
+import { DealsPage } from "./pages/DealsPage";
+import { DealDetailPage } from "./pages/DealDetailPage";
+import { ListsPage } from "./pages/ListsPage";
+import { ListDetailPage } from "./pages/ListDetailPage";
 import { TracePage } from "./pages/TracePage";
 import { MonitorPage } from "./pages/MonitorPage";
 import { AdminPage } from "./pages/AdminPage";
 import { ShowcasePage } from "./pages/ShowcasePage";
-import { OwnersPage } from "./pages/OwnersPage";
-import { EntityDetailPage } from "./pages/OwnerDetailPage";
 
 const MapPage = lazy(() =>
   import("./pages/MapPage").then((m) => ({ default: m.MapPage }))
@@ -67,13 +73,19 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="properties" element={<PropertiesPage />} />
           <Route path="properties/:id" element={<PropertyDetailPage />} />
-          <Route path="owners" element={<OwnersPage />} />
-          <Route path="owners/:id" element={<EntityDetailPage />} />
+          <Route path="groups" element={<GroupsPage />} />
+          <Route path="groups/:id" element={<GroupDetailPage />} />
+          <Route path="contacts" element={<ContactsPage />} />
+          <Route path="contacts/:id" element={<ContactDetailPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route
             path="transactions/:rtId"
             element={<TransactionDetailPage />}
           />
+          <Route path="deals" element={<DealsPage />} />
+          <Route path="deals/:id" element={<DealDetailPage />} />
+          <Route path="lists" element={<ListsPage />} />
+          <Route path="lists/:id" element={<ListDetailPage />} />
           <Route path="trace" element={<TracePage />} />
           <Route path="monitor" element={<MonitorPage />} />
           <Route

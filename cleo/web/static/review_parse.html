@@ -202,7 +202,27 @@ const review = initStageReview({
       { value: 'regressions', label: 'Regressions', fn: r => r.regression, count: records.filter(r => r.regression).length },
     ];
 
-    // Add specific flag filters
+    // Add property type filters
+    const typeCounts = {};
+    for (const r of records) {
+      const pt = r.property_type || '';
+      if (pt) typeCounts[pt] = (typeCounts[pt] || 0) + 1;
+    }
+    const typeOrder = ['retail', 'industrial', 'multifamily', 'office', 'hotel-motel', 'restaurant-bar',
+                       'res-land', 'comm-ind-land', 'farm', 'other-bldg', 'other-land', 'all'];
+    for (const pt of typeOrder) {
+      const count = typeCounts[pt] || 0;
+      if (count > 0) {
+        filters.push({
+          value: 'type:' + pt,
+          label: pt,
+          count,
+          fn: r => r.property_type === pt,
+        });
+      }
+    }
+
+    // Add specific flag filters with human-readable labels
     if (extra?.flags) {
       const allDefs = { ...(extra.flags.html_flag_defs || {}), ...(extra.flags.parse_flag_defs || {}) };
       const allCounts = {};
@@ -211,9 +231,12 @@ const review = initStageReview({
       for (const flagId of Object.keys(allDefs).sort()) {
         const count = allCounts[flagId] || 0;
         if (count > 0) {
+          // Extract short label from def string like "ADDRESS_NO_DIGIT — No address starts with digit"
+          const def = allDefs[flagId] || '';
+          const desc = def.includes('—') ? def.split('—')[1].trim() : def.split(' — ')[0] || flagId;
           filters.push({
             value: flagId,
-            label: flagId,
+            label: `${flagId}: ${desc}`,
             count,
             fn: r => (r.html_flags || []).includes(flagId) || (r.parse_flags || []).includes(flagId),
           });

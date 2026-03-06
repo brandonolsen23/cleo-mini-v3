@@ -9,8 +9,11 @@ from typing import Dict, List, Optional
 from cleo.config import DATA_DIR, PARSED_DIR
 from cleo.versioning import VersionedStore
 
-# Fields that change between runs but don't represent real diffs
-VOLATILE_FIELDS = {"ingest_timestamp", "html_path", "skip_index"}
+# Fields that change between runs but don't represent real diffs.
+# property_type and transaction_type are volatile for the initial promotion
+# (adding new fields to existing clean-reviewed records should not trigger
+# regressions). Remove them from this set once v016 is promoted.
+VOLATILE_FIELDS = {"ingest_timestamp", "html_path", "skip_index", "property_type", "transaction_type"}
 
 _store = VersionedStore(
     base_dir=PARSED_DIR,

@@ -31,6 +31,9 @@ PARCELLED_REVIEWS_PATH = DATA_DIR / "parcelled_reviews.json"
 # OSM POIs (snapshot source records for parcelled stage)
 OSM_POIS_DIR = DATA_DIR / "osm_pois"
 
+# Radar POIs (snapshot source records for parcelled stage)
+RADAR_POIS_DIR = DATA_DIR / "radar_pois"
+
 # Compiled (all sources reassembled per record)
 COMPILED_DIR = DATA_DIR / "compiled"
 COMPILED_REVIEWS_PATH = DATA_DIR / "compiled_reviews.json"
@@ -43,19 +46,20 @@ GEO_REVIEWS_PATH = DATA_DIR / "geo_reviews.json"
 PROPERTIES_PATH = DATA_DIR / "properties.json"
 PROPERTIES_UNRESOLVED_PATH = DATA_DIR / "properties_unresolved.json"
 SEARCH_INDEX_PATH = DATA_DIR / "search_index.json"
+PROPERTY_ID_MAP_PATH = DATA_DIR / "property_id_map.json"
 PROPERTY_EDITS_PATH = DATA_DIR / "property_edits.jsonl"
+
+# Groups (anchor layer — replaces parties/owners)
+GROUP_REGISTRY_PATH = DATA_DIR / "group_registry.json"
+GROUP_LINK_LOG_PATH = DATA_DIR / "group_link_log.jsonl"
+GROUP_PROPERTY_LINKS_PATH = DATA_DIR / "group_property_links.json"
+
+# Contacts
+CONTACT_REGISTRY_PATH = DATA_DIR / "contact_registry.json"
+CONTACT_LINK_LOG_PATH = DATA_DIR / "contact_link_log.jsonl"
 
 # Markets (static population reference)
 MARKETS_PATH = DATA_DIR / "markets.json"
-
-# Parties
-PARTIES_PATH = DATA_DIR / "parties.json"
-PARTY_EDITS_PATH = DATA_DIR / "party_edits.jsonl"
-KEYWORDS_PATH = DATA_DIR / "brand_keywords.json"
-
-# Owners
-OWNER_LINKS_PATH = DATA_DIR / "owner_links.json"
-OWNER_LINK_LOG_PATH = DATA_DIR / "owner_link_log.jsonl"
 
 # Data issues (user-flagged from UI)
 DATA_ISSUES_PATH = DATA_DIR / "data_issues.json"
@@ -71,20 +75,16 @@ MASTER_BRANDS_CSV = Path(os.getenv(
     os.path.expanduser("~/Library/CloudStorage/OneDrive-CanadianCommercial/00_Prospecting/Master Retail Sheet - All Brands.csv"),
 ))
 
+# CRM
+CRM_DIR = DATA_DIR / "crm"
+CRM_DEALS_PATH = CRM_DIR / "deals.json"
+CRM_LISTS_PATH = CRM_DIR / "lists.json"
+CRM_CONNECTIONS_PATH = CRM_DIR / "connections.json"
+CRM_EDITS_PATH = CRM_DIR / "edits.jsonl"
+
 # Feedback
 FEEDBACK_PATH = DATA_DIR / "feedback.json"
 
-# CRM
-CRM_DIR = DATA_DIR / "crm"
-CRM_CONTACTS_PATH = CRM_DIR / "contacts.json"
-CRM_DEALS_PATH = CRM_DIR / "deals.json"
-CRM_EDITS_PATH = CRM_DIR / "edits.jsonl"
-
-# Outreach
-OUTREACH_DIR = DATA_DIR / "outreach"
-OUTREACH_LISTS_PATH = OUTREACH_DIR / "lists.json"
-OUTREACH_LOG_PATH = OUTREACH_DIR / "outreach_log.json"
-OUTREACH_EDITS_PATH = OUTREACH_DIR / "edits.jsonl"
 
 # GeoWarehouse
 GW_SOURCE_DIR = Path(os.getenv("GW_SOURCE_DIR", str(Path.home() / "Downloads/GeoWarehouse/gw-ingest-data")))
@@ -123,6 +123,11 @@ PARCEL_REGISTRY_PATH = DATA_DIR / "parcel_registry.json"
 # Geocoding
 MAPBOX_TOKEN = os.getenv("MAPBOX_TOKEN", "").strip()
 HERE_API_KEY = os.getenv("HERE_API_KEY", "").strip()
+MAPQUEST_API_KEY = os.getenv("MAPQUEST_API_KEY", "").strip()
+LOCATIONIQ_KEY = os.getenv("LOCATIONIQ_KEY", "").strip()
+SLPY_API_KEY = os.getenv("SLPY_KEY", "").strip()
+MAPTILER_API_KEY = os.getenv("MAPTILER_API_KEY", "").strip()
+RADAR_API_KEY = os.getenv("RADAR_API_KEY", "").strip()
 GEOCODIO_KEY = os.getenv("GEOCODIO_KEY", "").strip()
 GEOCODE_CACHE_PATH = DATA_DIR / "geocode_cache.json"
 COORDINATES_PATH = DATA_DIR / "coordinates.json"
@@ -146,8 +151,6 @@ METRICS_DIR = DATA_DIR / "metrics"
 HTML_DIR.mkdir(parents=True, exist_ok=True)
 PARSED_DIR.mkdir(parents=True, exist_ok=True)
 EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
-CRM_DIR.mkdir(parents=True, exist_ok=True)
-OUTREACH_DIR.mkdir(parents=True, exist_ok=True)
 OPERATORS_DIR.mkdir(parents=True, exist_ok=True)
 STREETVIEW_DIR.mkdir(parents=True, exist_ok=True)
 FOOTPRINTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -159,6 +162,7 @@ EXPANDED_DIR.mkdir(parents=True, exist_ok=True)
 GEOCODED_DIR.mkdir(parents=True, exist_ok=True)
 PARCELLED_DIR.mkdir(parents=True, exist_ok=True)
 OSM_POIS_DIR.mkdir(parents=True, exist_ok=True)
+RADAR_POIS_DIR.mkdir(parents=True, exist_ok=True)
 COMPILED_DIR.mkdir(parents=True, exist_ok=True)
 METRICS_DIR.mkdir(parents=True, exist_ok=True)
 

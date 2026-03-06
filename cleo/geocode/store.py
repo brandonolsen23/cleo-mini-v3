@@ -77,7 +77,7 @@ class CoordinateStore:
     def best_coords(self, address: str) -> tuple[float, float] | None:
         """Return (lat, lng) using best available data.
 
-        Priority: geocodio > mapbox > here > scraper.
+        Priority: geocodio > mapbox > here > mapquest > scraper.
         If multiple non-scraper providers exist, use median.
         """
         entry = self.get(address)
@@ -85,7 +85,7 @@ class CoordinateStore:
             return None
 
         # Collect all valid coordinates
-        provider_order = ["geocodio", "mapbox", "here", "scraper"]
+        provider_order = ["geocodio", "mapbox", "here", "maptiler", "radar", "locationiq", "slpy", "mapquest", "scraper"]
         coords = []
         for p in provider_order:
             if p in entry and entry[p].get("lat") is not None:
@@ -277,6 +277,118 @@ class CoordinateStore:
             added += 1
         return added
 
+    def add_mapquest_batch(
+        self, addresses: list[str], results: list[Optional[dict]]
+    ) -> int:
+        """Merge a batch of MapQuest results into the store."""
+        added = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        for addr, result in zip(addresses, results):
+            if result is None:
+                continue
+            entry = {
+                "lat": result["lat"],
+                "lng": result["lng"],
+                "accuracy": result.get("accuracy", ""),
+                "geocoded_at": now,
+            }
+            mc = result.get("match_code")
+            if mc:
+                entry["match_code"] = mc
+            self.set_provider(addr, "mapquest", entry)
+            added += 1
+        return added
+
+    def add_slpy_batch(
+        self, addresses: list[str], results: list[Optional[dict]]
+    ) -> int:
+        """Merge a batch of SLPY results into the store."""
+        added = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        for addr, result in zip(addresses, results):
+            if result is None:
+                continue
+            entry = {
+                "lat": result["lat"],
+                "lng": result["lng"],
+                "accuracy": result.get("accuracy", ""),
+                "geocoded_at": now,
+            }
+            mc = result.get("match_code")
+            if mc:
+                entry["match_code"] = mc
+            self.set_provider(addr, "slpy", entry)
+            added += 1
+        return added
+
+    def add_locationiq_batch(
+        self, addresses: list[str], results: list[Optional[dict]]
+    ) -> int:
+        """Merge a batch of LocationIQ results into the store."""
+        added = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        for addr, result in zip(addresses, results):
+            if result is None:
+                continue
+            entry = {
+                "lat": result["lat"],
+                "lng": result["lng"],
+                "accuracy": result.get("accuracy", ""),
+                "geocoded_at": now,
+            }
+            mc = result.get("match_code")
+            if mc:
+                entry["match_code"] = mc
+            self.set_provider(addr, "locationiq", entry)
+            added += 1
+        return added
+
+    def add_radar_batch(
+        self, addresses: list[str], results: list[Optional[dict]]
+    ) -> int:
+        """Merge a batch of Radar results into the store."""
+        added = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        for addr, result in zip(addresses, results):
+            if result is None:
+                continue
+            entry = {
+                "lat": result["lat"],
+                "lng": result["lng"],
+                "accuracy": result.get("accuracy", ""),
+                "formatted_address": result.get("formatted_address", ""),
+                "geocoded_at": now,
+            }
+            mc = result.get("match_code")
+            if mc:
+                entry["match_code"] = mc
+            self.set_provider(addr, "radar", entry)
+            added += 1
+        return added
+
+    def add_maptiler_batch(
+        self, addresses: list[str], results: list[Optional[dict]]
+    ) -> int:
+        """Merge a batch of MapTiler results into the store."""
+        added = 0
+        now = datetime.now().isoformat(timespec="seconds")
+        for addr, result in zip(addresses, results):
+            if result is None:
+                continue
+            entry = {
+                "lat": result["lat"],
+                "lng": result["lng"],
+                "accuracy": result.get("accuracy", ""),
+                "formatted_address": result.get("formatted_address", ""),
+                "geocoded_at": now,
+            }
+            mc = result.get("match_code")
+            if mc:
+                entry["match_code"] = mc
+            self.set_provider(addr, "maptiler", entry)
+            added += 1
+        return added
+
     def add_here_batch(
         self, addresses: list[str], results: list[Optional[dict]]
     ) -> int:
@@ -303,18 +415,62 @@ class CoordinateStore:
         return added
 
     # --- Pending methods per provider ---
+    #
+    # Each method returns addresses sorted by priority:
+    #   1. No coverage at all (zero providers with valid lat/lng)
+    #   2. Missing this specific provider (double-up)
+
+    def _has_any_coords(self, entry: dict) -> bool:
+        """Check if an address has valid coordinates from ANY provider."""
+        for provider, data in entry.items():
+            if data.get("lat") is not None and data.get("lng") is not None:
+                return True
+        return False
+
+    def _pending_for(self, provider: str) -> list[str]:
+        """Return addresses missing this provider, no-coverage first."""
+        no_coverage: list[str] = []
+        double_up: list[str] = []
+        for k, v in self.addresses.items():
+            if provider in v:
+                continue
+            if self._has_any_coords(v):
+                double_up.append(k)
+            else:
+                no_coverage.append(k)
+        return no_coverage + double_up
 
     def pending_geocodio(self) -> list[str]:
-        """Return addresses that don't yet have a Geocodio result."""
-        return [k for k, v in self.addresses.items() if "geocodio" not in v]
+        """Return addresses missing Geocodio, no-coverage first."""
+        return self._pending_for("geocodio")
 
     def pending_mapbox(self) -> list[str]:
-        """Return addresses that don't yet have a Mapbox result."""
-        return [k for k, v in self.addresses.items() if "mapbox" not in v]
+        """Return addresses missing Mapbox, no-coverage first."""
+        return self._pending_for("mapbox")
 
     def pending_here(self) -> list[str]:
-        """Return addresses that don't yet have a HERE result."""
-        return [k for k, v in self.addresses.items() if "here" not in v]
+        """Return addresses missing HERE, no-coverage first."""
+        return self._pending_for("here")
+
+    def pending_mapquest(self) -> list[str]:
+        """Return addresses missing MapQuest, no-coverage first."""
+        return self._pending_for("mapquest")
+
+    def pending_locationiq(self) -> list[str]:
+        """Return addresses missing LocationIQ, no-coverage first."""
+        return self._pending_for("locationiq")
+
+    def pending_slpy(self) -> list[str]:
+        """Return addresses missing SLPY, no-coverage first."""
+        return self._pending_for("slpy")
+
+    def pending_maptiler(self) -> list[str]:
+        """Return addresses missing MapTiler, no-coverage first."""
+        return self._pending_for("maptiler")
+
+    def pending_radar(self) -> list[str]:
+        """Return addresses missing Radar, no-coverage first."""
+        return self._pending_for("radar")
 
     # --- Reporting ---
 

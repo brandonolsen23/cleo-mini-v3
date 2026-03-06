@@ -147,12 +147,14 @@ def _compile_rt_record(
         "id": record_id,
         "source": "realtrack",
         "source_versions": {},
+        "property_type": parsed.get("property_type", ""),
 
         # === TRANSACTION (bypass from parsed) ===
         "transaction": {
             "sale_date": txn.get("sale_date_iso", ""),
             "sale_price": _to_int(txn.get("sale_price", "")),
             "sale_price_display": txn.get("sale_price", ""),
+            "transaction_type": txn.get("transaction_type", ""),
             "arn": normalize_arn(txn.get("arn", "")),
             "pins": txn.get("pins", []),
             "rt_number": txn.get("rt_number", ""),

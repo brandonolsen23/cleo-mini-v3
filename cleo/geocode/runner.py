@@ -49,11 +49,21 @@ def run_geocode(
         pending = store.pending_geocodio()
     elif provider == "here":
         pending = store.pending_here()
+    elif provider == "mapquest":
+        pending = store.pending_mapquest()
+    elif provider == "locationiq":
+        pending = store.pending_locationiq()
+    elif provider == "slpy":
+        pending = store.pending_slpy()
+    elif provider == "maptiler":
+        pending = store.pending_maptiler()
+    elif provider == "radar":
+        pending = store.pending_radar()
     else:
         pending = store.pending_mapbox()
 
-    # Sort by address for deterministic order
-    pending.sort()
+    # Priority order: no-coverage first, then double-up (from _pending_for).
+    # Do NOT sort — sorting destroys the priority ordering.
 
     # Apply limit
     if limit is not None and len(pending) > limit:
@@ -106,6 +116,16 @@ def run_geocode(
                 added = store.add_geocodio_batch(batch, results)
             elif provider == "here":
                 added = store.add_here_batch(batch, results)
+            elif provider == "mapquest":
+                added = store.add_mapquest_batch(batch, results)
+            elif provider == "locationiq":
+                added = store.add_locationiq_batch(batch, results)
+            elif provider == "slpy":
+                added = store.add_slpy_batch(batch, results)
+            elif provider == "maptiler":
+                added = store.add_maptiler_batch(batch, results)
+            elif provider == "radar":
+                added = store.add_radar_batch(batch, results)
             else:
                 added = store.add_mapbox_batch(batch, results)
 
@@ -130,14 +150,18 @@ def run_geocode(
                 summary["geocoded"] += 1
                 summary["failures"] += 1
 
-        # Save periodically (every 10 batches)
-        if (summary["batch_requests"] % 10) == 0:
+        # Save periodically (every 5 batches)
+        if (summary["batch_requests"] % 5) == 0:
             store.save()
             if cache is not None and provider in ("mapbox", "here"):
                 cache.save()
+            elapsed = time.time() - start
+            rate = summary["geocoded"] / elapsed if elapsed > 0 else 0
+            remaining = (total - summary["geocoded"]) / rate if rate > 0 else 0
             logger.info(
-                "Progress: %d / %d geocoded (%d successes, %d failures)",
+                "Progress: %d / %d geocoded (%d ok, %d fail) — %.0f addr/s, ~%.0f min remaining",
                 summary["geocoded"], total, summary["successes"], summary["failures"],
+                rate, remaining / 60,
             )
 
     # Final save

@@ -63,11 +63,11 @@ class HereClient:
     def batch_forward(
         self,
         addresses: List[str],
-        delay: float = 0.2,
+        delay: float = 0.5,
     ) -> List[Optional[Dict]]:
         """Geocode addresses sequentially (HERE has no batch endpoint).
 
-        Respects rate limit of 5 req/sec with delay between requests.
+        Default 0.5s delay = 2 req/sec, well under HERE's 5/sec limit.
         Backs off on 429 responses.
         """
         results: List[Optional[Dict]] = []

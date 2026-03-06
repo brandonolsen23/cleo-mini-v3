@@ -45,14 +45,19 @@ function renderParsedFields(data, cmpData) {
   let html = '';
 
   html += section('Transaction', [
+    field('Property Type', data.property_type, cmpData?.property_type),
+    field('Transaction Type', t.transaction_type, cmpData?.transaction?.transaction_type),
     field('Address', addr.address, cmpData?.transaction?.address?.address),
     field('Suite', addr.address_suite, cmpData?.transaction?.address?.address_suite),
-    ...(addr.alternate_addresses?.length ? [field('Alt Addresses', addr.alternate_addresses.join('; '), cmpData?.transaction?.address?.alternate_addresses?.join('; '))] : []),
+    field('Alt Addresses', (addr.alternate_addresses || []).join('; '), (cmpData?.transaction?.address?.alternate_addresses || []).join('; ')),
     field('City', addr.city, cmpData?.transaction?.address?.city),
     field('Municipality', addr.municipality, cmpData?.transaction?.address?.municipality),
+    field('Province', addr.province, cmpData?.transaction?.address?.province),
     field('Postal Code', addr.postal_code, cmpData?.transaction?.address?.postal_code),
     field('Sale Date', t.sale_date, cmpData?.transaction?.sale_date),
+    field('Sale Date ISO', t.sale_date_iso, cmpData?.transaction?.sale_date_iso),
     field('Sale Price', t.sale_price, cmpData?.transaction?.sale_price),
+    field('Sale Price Raw', t.sale_price_raw, cmpData?.transaction?.sale_price_raw),
     field('Building SF', extras.building_sf, cmpExtras.building_sf),
     field('RT Number', t.rt_number, cmpData?.transaction?.rt_number),
     field('ARN', t.arn, cmpData?.transaction?.arn),
@@ -62,40 +67,67 @@ function renderParsedFields(data, cmpData) {
   html += section('Seller (Transferor)', [
     field('Name', xferor.name, cmpData?.transferor?.name),
     field('Contact', xferor.contact, cmpData?.transferor?.contact),
+    field('Attention', xferor.attention, cmpData?.transferor?.attention),
     field('Phone', formatVal(xferor.phone), formatVal(cmpData?.transferor?.phone)),
+    field('Phones', (xferor.phones || []).join('; '), (cmpData?.transferor?.phones || []).join('; ')),
     field('Address', formatVal(xferor.address), formatVal(cmpData?.transferor?.address)),
     field('Alt Names', (xferor.alternate_names || []).join('; '), (cmpData?.transferor?.alternate_names || []).join('; ')),
-    field('Phones', (xferor.phones || []).join('; '), (cmpData?.transferor?.phones || []).join('; ')),
+    field('Aliases', (xferor.aliases || []).join('; '), (cmpData?.transferor?.aliases || []).join('; ')),
+    field('Company Lines', (xferor.company_lines || []).join('; '), (cmpData?.transferor?.company_lines || []).join('; ')),
+    field('Contact Lines', (xferor.contact_lines || []).join('; '), (cmpData?.transferor?.contact_lines || []).join('; ')),
+    field('Address Lines', (xferor.address_lines || []).join('; '), (cmpData?.transferor?.address_lines || []).join('; ')),
+    field('Officer Titles', (xferor.officer_titles || []).join('; '), (cmpData?.transferor?.officer_titles || []).join('; ')),
   ]);
 
   html += section('Buyer (Transferee)', [
     field('Name', xferee.name, cmpData?.transferee?.name),
     field('Contact', xferee.contact, cmpData?.transferee?.contact),
+    field('Attention', xferee.attention, cmpData?.transferee?.attention),
     field('Phone', formatVal(xferee.phone), formatVal(cmpData?.transferee?.phone)),
+    field('Phones', (xferee.phones || []).join('; '), (cmpData?.transferee?.phones || []).join('; ')),
     field('Address', formatVal(xferee.address), formatVal(cmpData?.transferee?.address)),
     field('Alt Names', (xferee.alternate_names || []).join('; '), (cmpData?.transferee?.alternate_names || []).join('; ')),
-    field('Phones', (xferee.phones || []).join('; '), (cmpData?.transferee?.phones || []).join('; ')),
+    field('Aliases', (xferee.aliases || []).join('; '), (cmpData?.transferee?.aliases || []).join('; ')),
+    field('Company Lines', (xferee.company_lines || []).join('; '), (cmpData?.transferee?.company_lines || []).join('; ')),
+    field('Contact Lines', (xferee.contact_lines || []).join('; '), (cmpData?.transferee?.contact_lines || []).join('; ')),
+    field('Address Lines', (xferee.address_lines || []).join('; '), (cmpData?.transferee?.address_lines || []).join('; ')),
+    field('Officer Titles', (xferee.officer_titles || []).join('; '), (cmpData?.transferee?.officer_titles || []).join('; ')),
   ]);
 
   html += section('Site', [
     field('Legal Desc', site.legal_description, cmpData?.site?.legal_description),
     field('Area', `${site.site_area || ''} ${site.site_area_units || ''}`.trim(),
       `${cmpData?.site?.site_area || ''} ${cmpData?.site?.site_area_units || ''}`.trim()),
+    field('Frontage', `${site.site_frontage || ''} ${site.site_frontage_units || ''}`.trim(),
+      `${cmpData?.site?.site_frontage || ''} ${cmpData?.site?.site_frontage_units || ''}`.trim()),
+    field('Depth', `${site.site_depth || ''} ${site.site_depth_units || ''}`.trim(),
+      `${cmpData?.site?.site_depth || ''} ${cmpData?.site?.site_depth_units || ''}`.trim()),
     field('Zoning', site.zoning, cmpData?.site?.zoning),
+    field('Site PINs', site.pins, cmpData?.site?.pins),
+    field('Site ARN', site.arn, cmpData?.site?.arn),
   ]);
 
   html += section('Consideration', [
     field('Cash', consid.cash, cmpData?.consideration?.cash),
     field('Assumed Debt', consid.assumed_debt, cmpData?.consideration?.assumed_debt),
     field('Chattels', consid.chattels, cmpData?.consideration?.chattels),
+    field('Verbatim', consid.verbatim, cmpData?.consideration?.verbatim),
+    field('Chargees', (consid.chargees || []).join('; '), (cmpData?.consideration?.chargees || []).join('; ')),
   ]);
 
-  if (broker.brokerage || broker.phone) {
-    html += section('Broker', [
-      field('Brokerage', broker.brokerage, cmpData?.broker?.brokerage),
-      field('Phone', broker.phone, cmpData?.broker?.phone),
-    ]);
-  }
+  html += section('Description', [
+    field('Description', data.description, cmpData?.description),
+  ]);
+
+  html += section('Broker', [
+    field('Brokerage', broker.brokerage, cmpData?.broker?.brokerage),
+    field('Phone', broker.phone, cmpData?.broker?.phone),
+  ]);
+
+  html += section('Photos', [
+    field('Count', (data.photos || []).length || '', (cmpData?.photos || []).length || ''),
+    field('URLs', (data.photos || []).join('\n'), (cmpData?.photos || []).join('\n')),
+  ]);
 
   return html;
 }

@@ -182,6 +182,13 @@ function renderExpanded(container, data, compareData) {
 
   let html = '';
 
+  // Record metadata
+  html += section('Record', [
+    field('ID', data.id, compareData?.id),
+    field('Source', data.source, compareData?.source),
+    field('Source Version', data.source_version, compareData?.source_version),
+  ]);
+
   for (const [role, label] of [['property', 'Property'], ['property_alt', 'Alt Properties'], ['seller', 'Seller'], ['buyer', 'Buyer'], ['owner_address', 'Owner']]) {
     const block = data[role];
     if (!block) continue;
@@ -200,12 +207,11 @@ function renderExpanded(container, data, compareData) {
   }
 
   // Raw coords (brand)
-  if (data.raw_coords) {
-    html += section('Scraper Coords', [
-      field('Lat', data.raw_coords.lat),
-      field('Lng', data.raw_coords.lng),
-    ]);
-  }
+  html += section('Scraper Coords', [
+    field('Lat', data.raw_coords?.lat, compareData?.raw_coords?.lat),
+    field('Lng', data.raw_coords?.lng, compareData?.raw_coords?.lng),
+    field('Source', data.raw_coords?.source, compareData?.raw_coords?.source),
+  ]);
 
   container.innerHTML = html;
 }
@@ -214,28 +220,28 @@ function renderAddressEntries(title, block, cmpBlock) {
   if (!block || !block.addresses) return '';
 
   const cmpAddrs = cmpBlock?.addresses || [];
-  let html = `<div class="section"><div class="section-title">${escHtml(title)} (${block.addresses.length} address${block.addresses.length !== 1 ? 'es' : ''})</div>`;
+  let html = '';
 
   for (let i = 0; i < block.addresses.length; i++) {
     const addr = block.addresses[i];
-    const cmpAddr = cmpAddrs[i];
-    const skip = addr.skip_geocode;
-    const changed = cmpAddr && addr.canonical !== cmpAddr.canonical;
+    const cmpAddr = cmpAddrs[i] || {};
+    const label = block.addresses.length > 1 ? `${title} [${i + 1}/${block.addresses.length}]` : title;
 
-    html += `<div class="addr-entry${skip ? ' skip' : ''}${changed ? ' field-changed' : ''}">`;
-    html += `<div class="addr-canonical">${escHtml(addr.canonical)}`;
-    if (skip) html += `<span class="addr-skip-badge">skip</span>`;
-    html += `</div>`;
-
-    // Show unit detail if present (postal code is now in the canonical string)
-    if (addr.unit) {
-      html += `<div class="addr-detail">${escHtml((addr.unit_type || 'Unit') + ' ' + addr.unit)}</div>`;
-    }
-
-    html += '</div>';
+    html += section(label, [
+      field('Canonical', addr.canonical, cmpAddr.canonical),
+      field('Skip Geocode', String(addr.skip_geocode ?? ''), String(cmpAddr.skip_geocode ?? '')),
+      field('Street Number', addr.street_number, cmpAddr.street_number),
+      field('Street Name', addr.street_name, cmpAddr.street_name),
+      field('Street Suffix', addr.street_suffix, cmpAddr.street_suffix),
+      field('Street Direction', addr.street_direction, cmpAddr.street_direction),
+      field('Unit', addr.unit, cmpAddr.unit),
+      field('Unit Type', addr.unit_type, cmpAddr.unit_type),
+      field('City', addr.city, cmpAddr.city),
+      field('Province', addr.province, cmpAddr.province),
+      field('Postal Code', addr.postal_code, cmpAddr.postal_code),
+    ]);
   }
 
-  html += '</div>';
   return html;
 }
 
